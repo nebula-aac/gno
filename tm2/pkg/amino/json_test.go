@@ -12,8 +12,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
-	amino "github.com/gnolang/gno/tm2/pkg/amino"
+	"github.com/gnolang/gno/tm2/pkg/amino"
 	"github.com/gnolang/gno/tm2/pkg/amino/pkg"
 )
 
@@ -29,6 +31,8 @@ func registerTransports(cdc *amino.Codec) {
 }
 
 func TestMarshalJSON(t *testing.T) {
+	t.Parallel()
+
 	cdc := amino.NewCodec()
 	registerTransports(cdc)
 	cases := []struct {
@@ -110,7 +114,7 @@ func TestMarshalJSON(t *testing.T) {
 
 	for i, tt := range cases {
 		t.Logf("Trying case #%v", i)
-		blob, err := cdc.MarshalJSON(tt.in)
+		blob, err := cdc.JSONMarshal(tt.in)
 		if tt.wantErr != "" {
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Errorf("#%d:\ngot:\n\t%v\nwant non-nil error containing\n\t%q", i,
@@ -130,6 +134,8 @@ func TestMarshalJSON(t *testing.T) {
 }
 
 func TestMarshalJSONTime(t *testing.T) {
+	t.Parallel()
+
 	cdc := amino.NewCodec()
 	registerTransports(cdc)
 
@@ -145,11 +151,36 @@ func TestMarshalJSONTime(t *testing.T) {
 		Time:   time.Now().Round(0).UTC(), // strip monotonic.
 	}
 
-	b, err := cdc.MarshalJSON(s)
+	b, err := cdc.JSONMarshal(s)
 	assert.Nil(t, err)
 
 	var s2 SimpleStruct
-	err = cdc.UnmarshalJSON(b, &s2)
+	err = cdc.JSONUnmarshal(b, &s2)
+	assert.Nil(t, err)
+	assert.Equal(t, s, s2)
+}
+
+func TestMarshalJSONPBTime(t *testing.T) {
+	t.Parallel()
+
+	cdc := amino.NewCodec()
+	registerTransports(cdc)
+
+	type SimpleStruct struct {
+		Timestamp *timestamppb.Timestamp
+		Duration  *durationpb.Duration
+	}
+
+	s := SimpleStruct{
+		Timestamp: &timestamppb.Timestamp{Seconds: 1296012345, Nanos: 940483},
+		Duration:  &durationpb.Duration{Seconds: 100},
+	}
+
+	b, err := cdc.JSONMarshal(s)
+	assert.Nil(t, err)
+
+	var s2 SimpleStruct
+	err = cdc.JSONUnmarshal(b, &s2)
 	assert.Nil(t, err)
 	assert.Equal(t, s, s2)
 }
@@ -180,44 +211,50 @@ type innerFP struct {
 
 // We don't support maps.
 func TestUnmarshalMap(t *testing.T) {
+	t.Parallel()
+
 	jsonBytes := []byte("dontcare")
 	obj := new(map[string]int)
 	cdc := amino.NewCodec()
 	assert.Panics(t, func() {
-		err := cdc.UnmarshalJSON(jsonBytes, &obj)
+		err := cdc.JSONUnmarshal(jsonBytes, &obj)
 		assert.Fail(t, "should have panicked but got err: %v", err)
 	})
 	assert.Panics(t, func() {
-		err := cdc.UnmarshalJSON(jsonBytes, obj)
+		err := cdc.JSONUnmarshal(jsonBytes, obj)
 		assert.Fail(t, "should have panicked but got err: %v", err)
 	})
 	assert.Panics(t, func() {
-		bz, err := cdc.MarshalJSON(obj)
+		bz, err := cdc.JSONMarshal(obj)
 		assert.Fail(t, "should have panicked but got bz: %X err: %v", bz, err)
 	})
 }
 
 func TestUnmarshalFunc(t *testing.T) {
+	t.Parallel()
+
 	jsonBytes := []byte(`"dontcare"`)
 	obj := func() {}
 	cdc := amino.NewCodec()
 	assert.Panics(t, func() {
-		err := cdc.UnmarshalJSON(jsonBytes, &obj)
+		err := cdc.JSONUnmarshal(jsonBytes, &obj)
 		assert.Fail(t, "should have panicked but got err: %v", err)
 	})
 
-	err := cdc.UnmarshalJSON(jsonBytes, obj)
-	// UnmarshalJSON expects a pointer
+	err := cdc.JSONUnmarshal(jsonBytes, obj)
+	// JSONUnmarshal expects a pointer
 	assert.Error(t, err)
 
 	// ... nor encoding it.
 	assert.Panics(t, func() {
-		bz, err := cdc.MarshalJSON(obj)
+		bz, err := cdc.JSONMarshal(obj)
 		assert.Fail(t, "should have panicked but got bz: %X err: %v", bz, err)
 	})
 }
 
-func TestUnmarshalJSON(t *testing.T) {
+func TestJSONUnmarshal(t *testing.T) {
+	t.Parallel()
+
 	cdc := amino.NewCodec()
 	registerTransports(cdc)
 	cases := []struct {
@@ -286,7 +323,7 @@ func TestUnmarshalJSON(t *testing.T) {
 	}
 
 	for i, tt := range cases {
-		err := cdc.UnmarshalJSON([]byte(tt.blob), tt.in)
+		err := cdc.JSONUnmarshal([]byte(tt.blob), tt.in)
 		if tt.wantErr != "" {
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Errorf("#%d:\ngot:\n\t%q\nwant non-nil error containing\n\t%q", i,
@@ -310,6 +347,8 @@ func TestUnmarshalJSON(t *testing.T) {
 }
 
 func TestJSONCodecRoundTrip(t *testing.T) {
+	t.Parallel()
+
 	cdc := amino.NewCodec()
 	registerTransports(cdc)
 	type allInclusive struct {
@@ -351,7 +390,7 @@ func TestJSONCodecRoundTrip(t *testing.T) {
 	}
 
 	for i, tt := range cases {
-		mBlob, err := cdc.MarshalJSON(tt.in)
+		mBlob, err := cdc.JSONMarshal(tt.in)
 		if tt.wantErr != "" {
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Errorf("#%d:\ngot:\n\t%q\nwant non-nil error containing\n\t%q", i,
@@ -361,27 +400,27 @@ func TestJSONCodecRoundTrip(t *testing.T) {
 		}
 
 		if err != nil {
-			t.Errorf("#%d: unexpected error after MarshalJSON: %v", i, err)
+			t.Errorf("#%d: unexpected error after JSONMarshal: %v", i, err)
 			continue
 		}
 
-		if err = cdc.UnmarshalJSON(mBlob, tt.out); err != nil {
-			t.Errorf("#%d: unexpected error after UnmarshalJSON: %v\nmBlob: %s", i, err, mBlob)
+		if err = cdc.JSONUnmarshal(mBlob, tt.out); err != nil {
+			t.Errorf("#%d: unexpected error after JSONUnmarshal: %v\nmBlob: %s", i, err, mBlob)
 			continue
 		}
 
 		// Now check that the input is exactly equal to the output
-		uBlob, err := cdc.MarshalJSON(tt.out)
+		uBlob, err := cdc.JSONMarshal(tt.out)
 		assert.NoError(t, err)
-		if err := cdc.UnmarshalJSON(mBlob, tt.out); err != nil {
-			t.Errorf("#%d: unexpected error after second MarshalJSON: %v", i, err)
+		if err := cdc.JSONUnmarshal(mBlob, tt.out); err != nil {
+			t.Errorf("#%d: unexpected error after second JSONMarshal: %v", i, err)
 			continue
 		}
 		if !reflect.DeepEqual(tt.want, tt.out) {
-			t.Errorf("#%d: After roundtrip UnmarshalJSON\ngot: \t%v\nwant:\t%v", i, tt.out, tt.want)
+			t.Errorf("#%d: After roundtrip JSONUnmarshal\ngot: \t%v\nwant:\t%v", i, tt.out, tt.want)
 		}
 		if !bytes.Equal(mBlob, uBlob) {
-			t.Errorf("#%d: After roundtrip MarshalJSON\ngot: \t%s\nwant:\t%s", i, uBlob, mBlob)
+			t.Errorf("#%d: After roundtrip JSONMarshal\ngot: \t%s\nwant:\t%s", i, uBlob, mBlob)
 		}
 	}
 }
@@ -480,15 +519,17 @@ func interfacePtr(v interface{}) *interface{} {
 // Test to ensure that Amino codec's time encoding/decoding roundtrip
 // produces the same result as the standard library json's.
 func TestAminoJSONTimeEncodeDecodeRoundTrip(t *testing.T) {
+	t.Parallel()
+
 	loc, err := time.LoadLocation("America/Los_Angeles")
 	require.NoError(t, err)
 	din := time.Date(2008, 9, 15, 14, 13, 12, 11109876, loc).Round(time.Millisecond).UTC()
 
 	cdc := amino.NewCodec()
-	blobAmino, err := cdc.MarshalJSON(din)
-	require.Nil(t, err, "amino.Codec.MarshalJSON should succeed")
+	blobAmino, err := cdc.JSONMarshal(din)
+	require.Nil(t, err, "amino.Codec.JSONMarshal should succeed")
 	var tAminoOut time.Time
-	require.Nil(t, cdc.UnmarshalJSON(blobAmino, &tAminoOut), "amino.Codec.UnmarshalJSON should succeed")
+	require.Nil(t, cdc.JSONUnmarshal(blobAmino, &tAminoOut), "amino.Codec.JSONUnmarshal should succeed")
 	require.NotEqual(t, tAminoOut, time.Time{}, "amino.marshaled definitely isn't equal to zero time")
 	require.Equal(t, tAminoOut, din, "expecting marshaled in to be equal to marshaled out")
 
@@ -503,6 +544,8 @@ func TestAminoJSONTimeEncodeDecodeRoundTrip(t *testing.T) {
 }
 
 func TestMarshalJSONIndent(t *testing.T) {
+	t.Parallel()
+
 	cdc := amino.NewCodec()
 	registerTransports(cdc)
 	obj := Transport{Vehicle: Car("Tesla")}

@@ -13,6 +13,9 @@ import (
 type Keybase interface {
 	// CRUD on the keystore
 	List() ([]Info, error)
+	HasByNameOrAddress(nameOrBech32 string) (bool, error)
+	HasByName(name string) (bool, error)
+	HasByAddress(address crypto.Address) (bool, error)
 	GetByNameOrAddress(nameOrBech32 string) (Info, error)
 	GetByName(name string) (Info, error)
 	GetByAddress(address crypto.Address) (Info, error)
@@ -24,10 +27,12 @@ type Keybase interface {
 
 	// CreateAccount creates an account based using the BIP44 path (44'/118'/{account}'/0/{index}
 	// Encrypt the key to disk using encryptPasswd.
+	// If an account exists with the same address but a different name, it is replaced by the new name.
 	// See https://github.com/tendermint/classic/sdk/issues/2095
 	CreateAccount(name, mnemonic, bip39Passwd, encryptPasswd string, account uint32, index uint32) (Info, error)
 
 	// Like CreateAccount but from general bip44 params.
+	// If an account exists with the same address but a different name, it is replaced by the new name.
 	CreateAccountBip44(name, mnemonic, bip39Passwd, encryptPasswd string, params hd.BIP44Params) (Info, error)
 
 	// CreateLedger creates, stores, and returns a new Ledger key reference
@@ -39,19 +44,15 @@ type Keybase interface {
 	// CreateMulti creates, stores, and returns a new multsig (offline) key reference
 	CreateMulti(name string, pubkey crypto.PubKey) (info Info, err error)
 
-	// The following operations will *only* work on locally-stored keys
-	Update(name, oldpass string, getNewpass func() (string, error)) error
-	Import(name string, armor string) (err error)
-	ImportPrivKey(name, armor, decryptPassphrase, encryptPassphrase string) error
-	ImportPrivKeyUnsafe(name, armor, encryptPassphrase string) error
-	ImportPubKey(name string, armor string) (err error)
-	Export(name string) (armor string, err error)
-	ExportPubKey(name string) (armor string, err error)
-	ExportPrivKey(name, decryptPassphrase, encryptPassphrase string) (armor string, err error)
-	ExportPrivKeyUnsafe(name, decryptPassphrase string) (armor string, err error)
+	// Rotate replaces the encryption password for a given key
+	Rotate(name, oldpass string, getNewpass func() (string, error)) error
 
-	// ExportPrivateKeyObject *only* works on locally-stored keys. Temporary method until we redo the exporting API
-	ExportPrivateKeyObject(name string, passphrase string) (crypto.PrivKey, error)
+	// ImportPrivKey imports the given private key into the keybase.
+	// In all import operations, if an account exists with the same address but a different name, it is replaced by the new name
+	ImportPrivKey(name string, key crypto.PrivKey, encryptPass string) error
+
+	// ExportPrivKey exports the private key from the keybase. It *only* works on locally-stored keys
+	ExportPrivKey(name string, decryptPass string) (crypto.PrivKey, error)
 
 	// CloseDB closes the database.
 	CloseDB()

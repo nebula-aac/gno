@@ -24,6 +24,7 @@ type Type interface {
 	String() string // for dev/debugging
 	Elem() Type     // for TODO... types
 	GetPkgPath() string
+	IsNamed() bool // named vs unname type. property as a method
 }
 
 type TypeID string
@@ -40,7 +41,15 @@ func (tid TypeID) String() string {
 	return string(tid)
 }
 
-func typeid(f string, args ...interface{}) (tid TypeID) {
+func typeid(s string) (tid TypeID) {
+	x := TypeID(s)
+	if debug {
+		debug.Println("TYPEID", s)
+	}
+	return x
+}
+
+func typeidf(f string, args ...interface{}) (tid TypeID) {
 	fs := fmt.Sprintf(f, args...)
 	x := TypeID(fs)
 	if debug {
@@ -68,6 +77,7 @@ func (*PackageType) assertType()    {}
 func (*ChanType) assertType()       {}
 func (*NativeType) assertType()     {}
 func (blockType) assertType()       {}
+func (heapItemType) assertType()    {}
 func (*tupleType) assertType()      {}
 func (RefType) assertType()         {}
 func (MaybeNativeType) assertType() {}
@@ -323,6 +333,10 @@ func (pt PrimitiveType) GetPkgPath() string {
 	return ""
 }
 
+func (pt PrimitiveType) IsNamed() bool {
+	return true
+}
+
 // ----------------------------------------
 // Field type (partial)
 
@@ -367,6 +381,10 @@ func (ft FieldType) Elem() Type {
 
 func (ft FieldType) GetPkgPath() string {
 	panic("FieldType is a pseudotype with no package path")
+}
+
+func (ft FieldType) IsNamed() bool {
+	panic("FieldType is a pseudotype with no property called named")
 }
 
 // ----------------------------------------
@@ -511,7 +529,7 @@ func (at *ArrayType) Kind() Kind {
 
 func (at *ArrayType) TypeID() TypeID {
 	if at.typeid.IsZero() {
-		at.typeid = typeid("[%d]%s", at.Len, at.Elt.TypeID().String())
+		at.typeid = typeidf("[%d]%s", at.Len, at.Elt.TypeID().String())
 	}
 	return at.typeid
 }
@@ -526,6 +544,10 @@ func (at *ArrayType) Elem() Type {
 
 func (at *ArrayType) GetPkgPath() string {
 	return ""
+}
+
+func (at *ArrayType) IsNamed() bool {
+	return false
 }
 
 // ----------------------------------------
@@ -550,9 +572,9 @@ func (st *SliceType) Kind() Kind {
 func (st *SliceType) TypeID() TypeID {
 	if st.typeid.IsZero() {
 		if st.Vrd {
-			st.typeid = typeid("...%s", st.Elt.TypeID().String())
+			st.typeid = typeidf("...%s", st.Elt.TypeID().String())
 		} else {
-			st.typeid = typeid("[]%s", st.Elt.TypeID().String())
+			st.typeid = typeidf("[]%s", st.Elt.TypeID().String())
 		}
 	}
 	return st.typeid
@@ -574,6 +596,10 @@ func (st *SliceType) GetPkgPath() string {
 	return ""
 }
 
+func (st *SliceType) IsNamed() bool {
+	return false
+}
+
 // ----------------------------------------
 // Pointer type
 
@@ -589,7 +615,7 @@ func (pt *PointerType) Kind() Kind {
 
 func (pt *PointerType) TypeID() TypeID {
 	if pt.typeid.IsZero() {
-		pt.typeid = typeid("*%s", pt.Elt.TypeID().String())
+		pt.typeid = typeidf("*%s", pt.Elt.TypeID().String())
 	}
 	return pt.typeid
 }
@@ -610,6 +636,10 @@ func (pt *PointerType) Elem() Type {
 
 func (pt *PointerType) GetPkgPath() string {
 	return pt.Elt.GetPkgPath()
+}
+
+func (pt *PointerType) IsNamed() bool {
+	return false
 }
 
 func (pt *PointerType) FindEmbeddedFieldType(callerPath string, n Name, m map[Type]struct{}) (
@@ -696,7 +726,7 @@ func (pt *PointerType) FindEmbeddedFieldType(callerPath string, n Name, m map[Ty
 		}
 	case *NativeType:
 		npt := &NativeType{
-			Type: reflect.PtrTo(cet.Type),
+			Type: reflect.PointerTo(cet.Type),
 		}
 		return npt.FindEmbeddedFieldType(n, m)
 	default:
@@ -726,7 +756,7 @@ func (st *StructType) TypeID() TypeID {
 		// may have the same TypeID if and only if neither have
 		// unexported fields.  st.PkgPath is only included in field
 		// names that are not uppercase.
-		st.typeid = typeid(
+		st.typeid = typeidf(
 			"struct{%s}",
 			FieldTypeList(st.Fields).TypeIDForPackage(st.PkgPath),
 		)
@@ -745,6 +775,10 @@ func (st *StructType) Elem() Type {
 
 func (st *StructType) GetPkgPath() string {
 	return st.PkgPath
+}
+
+func (st *StructType) IsNamed() bool {
+	return false
 }
 
 // NOTE only works for exposed non-embedded fields.
@@ -867,6 +901,10 @@ func (pt *PackageType) GetPkgPath() string {
 	panic("package types has no package path (unlike package values)")
 }
 
+func (pt *PackageType) IsNamed() bool {
+	panic("package types have no property called named")
+}
+
 // ----------------------------------------
 // Interface type
 
@@ -879,7 +917,6 @@ type InterfaceType struct {
 }
 
 // General empty interface.
-var gEmptyInterfaceType *InterfaceType = &InterfaceType{}
 
 func (it *InterfaceType) IsEmptyInterface() bool {
 	return len(it.Methods) == 0
@@ -925,6 +962,10 @@ func (it *InterfaceType) Elem() Type {
 
 func (it *InterfaceType) GetPkgPath() string {
 	return it.PkgPath
+}
+
+func (it *InterfaceType) IsNamed() bool {
+	return false
 }
 
 func (it *InterfaceType) FindEmbeddedFieldType(callerPath string, n Name, m map[Type]struct{}) (
@@ -977,13 +1018,13 @@ func (it *InterfaceType) FindEmbeddedFieldType(callerPath string, n Name, m map[
 
 // For run-time type assertion.
 // TODO: optimize somehow.
-func (it *InterfaceType) IsImplementedBy(ot Type) (result bool) {
+func (it *InterfaceType) VerifyImplementedBy(ot Type) error {
 	for _, im := range it.Methods {
 		if im.Type.Kind() == InterfaceKind {
 			// field is embedded interface...
 			im2 := baseOf(im.Type).(*InterfaceType)
-			if !im2.IsImplementedBy(ot) {
-				return false
+			if err := im2.VerifyImplementedBy(ot); err != nil {
+				return err
 			} else {
 				continue
 			}
@@ -991,7 +1032,7 @@ func (it *InterfaceType) IsImplementedBy(ot Type) (result bool) {
 		// find method in field.
 		tr, hp, rt, ft, _ := findEmbeddedFieldType(it.PkgPath, ot, im.Name, nil)
 		if tr == nil { // not found.
-			return false
+			return fmt.Errorf("missing method %s", im.Name)
 		}
 		if nft, ok := ft.(*NativeType); ok {
 			// Treat native function types as autoNative calls.
@@ -1001,22 +1042,26 @@ func (it *InterfaceType) IsImplementedBy(ot Type) (result bool) {
 			// ie, if each of ft's arg types can match
 			// against the desired arg types in im.Types.
 			if !gno2GoTypeMatches(im.Type, nft.Type) {
-				return false
+				return fmt.Errorf("wrong type for method %s", im.Name)
 			}
 		} else if mt, ok := ft.(*FuncType); ok {
 			// if method is pointer receiver, check addressability:
 			if _, ptrRcvr := rt.(*PointerType); ptrRcvr && !hp {
-				return false // not addressable.
+				return fmt.Errorf("method %s has pointer receiver", im.Name) // not addressable.
 			}
 			// check for func type equality.
 			dmtid := mt.TypeID()
 			imtid := im.Type.TypeID()
 			if dmtid != imtid {
-				return false
+				return fmt.Errorf("wrong type for method %s", im.Name)
 			}
 		}
 	}
-	return true
+	return nil
+}
+
+func (it *InterfaceType) IsImplementedBy(ot Type) bool {
+	return it.VerifyImplementedBy(ot) == nil
 }
 
 func (it *InterfaceType) GetPathForName(n Name) ValuePath {
@@ -1041,11 +1086,11 @@ func (ct *ChanType) TypeID() TypeID {
 	if ct.typeid.IsZero() {
 		switch ct.Dir {
 		case SEND | RECV:
-			ct.typeid = typeid("chan{%s}" + ct.Elt.TypeID().String())
+			ct.typeid = typeidf("chan{%s}", ct.Elt.TypeID().String())
 		case SEND:
-			ct.typeid = typeid("<-chan{%s}" + ct.Elt.TypeID().String())
+			ct.typeid = typeidf("<-chan{%s}", ct.Elt.TypeID().String())
 		case RECV:
-			ct.typeid = typeid("chan<-{%s}" + ct.Elt.TypeID().String())
+			ct.typeid = typeidf("chan<-{%s}", ct.Elt.TypeID().String())
 		default:
 			panic("should not happen")
 		}
@@ -1074,6 +1119,10 @@ func (ct *ChanType) GetPkgPath() string {
 	return ""
 }
 
+func (ct *ChanType) IsNamed() bool {
+	return false
+}
+
 // ----------------------------------------
 // Function type
 
@@ -1083,6 +1132,14 @@ type FuncType struct {
 
 	typeid TypeID
 	bound  *FuncType
+
+	IsClosure bool
+}
+
+// true for predefined func types that are not filled in yet.
+func (ft *FuncType) IsZero() bool {
+	// XXX be explicit.
+	return ft.Params == nil && ft.Results == nil && ft.typeid.IsZero() && ft.bound == nil
 }
 
 // if ft is a method, returns whether method takes a pointer receiver.
@@ -1126,7 +1183,7 @@ func (ft *FuncType) UnboundType(rft FieldType) *FuncType {
 // NOTE: if ft.HasVarg() and !isVarg, argTVs[len(ft.Params):]
 // are ignored (since they are of the same type as
 // argTVs[len(ft.Params)-1]).
-func (ft *FuncType) Specify(store Store, argTVs []TypedValue, isVarg bool) *FuncType {
+func (ft *FuncType) Specify(store Store, n Node, argTVs []TypedValue, isVarg bool) *FuncType {
 	hasGenericParams := false
 	hasGenericResults := false
 	for _, pf := range ft.Params {
@@ -1193,9 +1250,9 @@ func (ft *FuncType) Specify(store Store, argTVs []TypedValue, isVarg bool) *Func
 	for i, pf := range ft.Params {
 		arg := &argTVs[i]
 		if arg.T.Kind() == TypeKind {
-			specifyType(store, lookup, pf.Type, arg.T, arg.GetType())
+			specifyType(store, n, lookup, pf.Type, arg.T, arg.GetType())
 		} else {
-			specifyType(store, lookup, pf.Type, arg.T, nil)
+			specifyType(store, n, lookup, pf.Type, arg.T, nil)
 		}
 	}
 	// apply specifics to generic params and results.
@@ -1251,7 +1308,7 @@ func (ft *FuncType) TypeID() TypeID {
 		}
 	*/
 	if ft.typeid.IsZero() {
-		ft.typeid = typeid(
+		ft.typeid = typeidf(
 			"func(%s)(%s)",
 			// pp,
 			ps.UnnamedTypeID(),
@@ -1273,6 +1330,10 @@ func (ft *FuncType) Elem() Type {
 
 func (ft *FuncType) GetPkgPath() string {
 	panic("function types have no package path")
+}
+
+func (ft *FuncType) IsNamed() bool {
+	return false
 }
 
 func (ft *FuncType) HasVarg() bool {
@@ -1310,7 +1371,7 @@ func (mt *MapType) Kind() Kind {
 
 func (mt *MapType) TypeID() TypeID {
 	if mt.typeid.IsZero() {
-		mt.typeid = typeid(
+		mt.typeid = typeidf(
 			"map[%s]%s",
 			mt.Key.TypeID().String(),
 			mt.Value.TypeID().String(),
@@ -1331,6 +1392,10 @@ func (mt *MapType) Elem() Type {
 
 func (mt *MapType) GetPkgPath() string {
 	return ""
+}
+
+func (mt *MapType) IsNamed() bool {
+	return false
 }
 
 // ----------------------------------------
@@ -1359,6 +1424,10 @@ func (tt *TypeType) Elem() Type {
 
 func (tt *TypeType) GetPkgPath() string {
 	panic("typeval types have no package path")
+}
+
+func (tt *TypeType) IsNamed() bool {
+	panic("typeval types have no property called 'named'")
 }
 
 // ----------------------------------------
@@ -1430,7 +1499,7 @@ func (dt *DeclaredType) TypeID() TypeID {
 }
 
 func DeclaredTypeID(pkgPath string, name Name) TypeID {
-	return typeid("%s.%s", pkgPath, name)
+	return typeidf("%s.%s", pkgPath, name)
 }
 
 func (dt *DeclaredType) String() string {
@@ -1445,11 +1514,66 @@ func (dt *DeclaredType) GetPkgPath() string {
 	return dt.PkgPath
 }
 
+func (dt *DeclaredType) IsNamed() bool {
+	return true
+}
+
 func (dt *DeclaredType) DefineMethod(fv *FuncValue) {
+	if !dt.TryDefineMethod(fv) {
+		panic(fmt.Sprintf("redeclaration of method %s.%s",
+			dt.Name, fv.Name))
+	}
+}
+
+// TryDefineMethod attempts to define the method fv on type dt.
+// It returns false if this does not succeeds, as a result of a re-declaration.
+func (dt *DeclaredType) TryDefineMethod(fv *FuncValue) bool {
+	name := fv.Name
+
+	// Handle redeclarations.
+	for i, tv := range dt.Methods {
+		ofv := tv.V.(*FuncValue)
+		if ofv.Name != name {
+			continue
+		}
+
+		// Do not allow redeclaring (override) a method.
+		// In the future we may allow this, just like we
+		// allow package-level function overrides.
+
+		// Special case: if the type and location are the same,
+		// ignore and do not redefine.
+		// This is due to PreprocessAllFilesAndSaveBlocknodes,
+		// and because the preprocessor fills some of the
+		// method's FuncValue. Since the method was already
+		// filled in prior to PreprocessAllFilesAndSaveBlocks,
+		// there is no need to re-set it.
+		// Keep this or move this check outside.
+		if fv.Type.TypeID() == ofv.Type.TypeID() &&
+			fv.Source.GetLocation() == ofv.Source.GetLocation() {
+			return true
+		}
+
+		// Special case: allow defining a native body.
+		if fv.Type.TypeID() == ofv.Type.TypeID() &&
+			!ofv.IsNative() && fv.IsNative() {
+			dt.Methods[i] = TypedValue{
+				T: fv.Type, // keep old type.
+				V: fv,
+			}
+			return true
+		}
+
+		// Otherwise fail and return false.
+		return false
+	}
+
+	// If not redeclaring, just append.
 	dt.Methods = append(dt.Methods, TypedValue{
 		T: fv.Type,
 		V: fv,
 	})
+	return true
 }
 
 func (dt *DeclaredType) GetPathForName(n Name) ValuePath {
@@ -1673,9 +1797,9 @@ func (nt *NativeType) TypeID() TypeID {
 			// > (e.g., base64 instead of "encoding/base64") and is not
 			// > guaranteed to be unique among types. To test for type identity,
 			// > compare the Types directly.
-			nt.typeid = typeid("go:%s.%s", nt.Type.PkgPath(), nt.Type.String())
+			nt.typeid = typeidf("go:%s.%s", nt.Type.PkgPath(), nt.Type.String())
 		} else {
-			nt.typeid = typeid("go:%s.%s", nt.Type.PkgPath(), nt.Type.Name())
+			nt.typeid = typeidf("go:%s.%s", nt.Type.PkgPath(), nt.Type.Name())
 		}
 	}
 	return nt.typeid
@@ -1709,6 +1833,14 @@ func (nt *NativeType) Elem() Type {
 
 func (nt *NativeType) GetPkgPath() string {
 	return "go:" + nt.Type.PkgPath()
+}
+
+func (nt *NativeType) IsNamed() bool {
+	if nt.Type.Name() != "" {
+		return true
+	} else {
+		return false
+	}
 }
 
 func (nt *NativeType) GnoType(store Store) Type {
@@ -1839,6 +1971,39 @@ func (bt blockType) GetPkgPath() string {
 	panic("blockType has no package path")
 }
 
+func (bt blockType) IsNamed() bool {
+	panic("blockType has no property called named")
+}
+
+// ----------------------------------------
+// heapItemType
+
+type heapItemType struct{} // no data
+
+func (bt heapItemType) Kind() Kind {
+	return HeapItemKind
+}
+
+func (bt heapItemType) TypeID() TypeID {
+	return typeid("heapitem")
+}
+
+func (bt heapItemType) String() string {
+	return "heapitem"
+}
+
+func (bt heapItemType) Elem() Type {
+	panic("heapItemType has no elem type")
+}
+
+func (bt heapItemType) GetPkgPath() string {
+	panic("heapItemType has no package path")
+}
+
+func (bt heapItemType) IsNamed() bool {
+	panic("heapItemType has no property called named")
+}
+
 // ----------------------------------------
 // tupleType
 
@@ -1889,6 +2054,10 @@ func (tt *tupleType) GetPkgPath() string {
 	panic("typleType has no package path")
 }
 
+func (tt *tupleType) IsNamed() bool {
+	panic("typleType has no property called named")
+}
+
 // ----------------------------------------
 // RefType
 
@@ -1909,11 +2078,15 @@ func (rt RefType) String() string {
 }
 
 func (rt RefType) Elem() Type {
-	panic("should not happen")
+	panic("RefType has no elem type")
 }
 
 func (rt RefType) GetPkgPath() string {
-	panic("should not happen")
+	panic("RefType has no package path")
+}
+
+func (rt RefType) IsNamed() bool {
+	panic("RefType has no property called named")
 }
 
 // ----------------------------------------
@@ -1944,6 +2117,10 @@ func (mn MaybeNativeType) Elem() Type {
 
 func (mn MaybeNativeType) GetPkgPath() string {
 	return mn.Type.GetPkgPath()
+}
+
+func (mn MaybeNativeType) IsNamed() bool {
+	return mn.Type.IsNamed()
 }
 
 // ----------------------------------------
@@ -1981,9 +2158,10 @@ const (
 	MapKind
 	TypeKind // not in go.
 	// UnsafePointerKind
-	BlockKind   // not in go.
-	TupleKind   // not in go.
-	RefTypeKind // not in go.
+	BlockKind    // not in go.
+	HeapItemKind // not in go.
+	TupleKind    // not in go.
+	RefTypeKind  // not in go.
 )
 
 // This is generally slower than switching on baseOf(t).
@@ -2056,6 +2234,8 @@ func KindOf(t Type) Kind {
 		return t.Kind()
 	case blockType:
 		return BlockKind
+	case heapItemType:
+		return HeapItemKind
 	case *tupleType:
 		return TupleKind
 	case RefType:
@@ -2070,11 +2250,11 @@ func KindOf(t Type) Kind {
 // ----------------------------------------
 // main type-assertion functions.
 
-// TODO: document what class of problems its for.
+// Only for runtime debugging.
 // One of them can be nil, and this lets uninitialized primitives
 // and others serve as empty values.  See doOpAdd()
-// usage: if debug { assertSameTypes() }
-func assertSameTypes(lt, rt Type) {
+// usage: if debug { debugAssertSameTypes() }
+func debugAssertSameTypes(lt, rt Type) {
 	if lt == nil && rt == nil {
 		// both are nil.
 	} else if lt == nil || rt == nil {
@@ -2099,8 +2279,10 @@ func assertSameTypes(lt, rt Type) {
 	}
 }
 
-// Like assertSameTypes(), but more relaxed, for == and !=.
-func assertEqualityTypes(lt, rt Type) {
+// Only for runtime debugging.
+// Like debugAssertSameTypes(), but more relaxed, for == and !=.
+// usage: if debug { debugAssertEqualityTypes() }
+func debugAssertEqualityTypes(lt, rt Type) {
 	if lt == nil && rt == nil {
 		// both are nil.
 	} else if lt == nil || rt == nil {
@@ -2229,6 +2411,7 @@ func fillEmbeddedName(ft *FieldType) {
 	ft.Embedded = true
 }
 
+// TODO: empty interface? refer to assertAssignableTo
 func IsImplementedBy(it Type, ot Type) bool {
 	switch cbt := baseOf(it).(type) {
 	case *InterfaceType:
@@ -2246,7 +2429,7 @@ func IsImplementedBy(it Type, ot Type) bool {
 // specTypeval is Type if spec is TypeKind.
 // NOTE: type-checking isn't strictly necessary here, as the resulting lookup
 // map gets applied to produce the ultimate param and result types.
-func specifyType(store Store, lookup map[Name]Type, tmpl Type, spec Type, specTypeval Type) {
+func specifyType(store Store, n Node, lookup map[Name]Type, tmpl Type, spec Type, specTypeval Type) {
 	if isGeneric(spec) {
 		panic("spec must not be generic")
 	}
@@ -2260,11 +2443,11 @@ func specifyType(store Store, lookup map[Name]Type, tmpl Type, spec Type, specTy
 	case *PointerType:
 		switch pt := baseOf(spec).(type) {
 		case *PointerType:
-			specifyType(store, lookup, ct.Elt, pt.Elt, nil)
+			specifyType(store, n, lookup, ct.Elt, pt.Elt, nil)
 		case *NativeType:
 			// NOTE: see note about type-checking.
 			et := pt.Elem()
-			specifyType(store, lookup, ct.Elt, et, nil)
+			specifyType(store, n, lookup, ct.Elt, et, nil)
 		default:
 			panic(fmt.Sprintf(
 				"expected pointer kind but got %s",
@@ -2273,11 +2456,11 @@ func specifyType(store Store, lookup map[Name]Type, tmpl Type, spec Type, specTy
 	case *ArrayType:
 		switch at := baseOf(spec).(type) {
 		case *ArrayType:
-			specifyType(store, lookup, ct.Elt, at.Elt, nil)
+			specifyType(store, n, lookup, ct.Elt, at.Elt, nil)
 		case *NativeType:
 			// NOTE: see note about type-checking.
 			et := at.Elem()
-			specifyType(store, lookup, ct.Elt, et, nil)
+			specifyType(store, n, lookup, ct.Elt, et, nil)
 		default:
 			panic(fmt.Sprintf(
 				"expected array kind but got %s",
@@ -2288,7 +2471,7 @@ func specifyType(store Store, lookup map[Name]Type, tmpl Type, spec Type, specTy
 		case PrimitiveType:
 			if isGeneric(ct.Elt) {
 				if st.Kind() == StringKind {
-					specifyType(store, lookup, ct.Elt, Uint8Type, nil)
+					specifyType(store, n, lookup, ct.Elt, Uint8Type, nil)
 				} else {
 					panic(fmt.Sprintf(
 						"expected slice kind but got %s",
@@ -2304,11 +2487,11 @@ func specifyType(store Store, lookup map[Name]Type, tmpl Type, spec Type, specTy
 					spec.Kind()))
 			}
 		case *SliceType:
-			specifyType(store, lookup, ct.Elt, st.Elt, nil)
+			specifyType(store, n, lookup, ct.Elt, st.Elt, nil)
 		case *NativeType:
 			// NOTE: see note about type-checking.
 			et := st.Elem()
-			specifyType(store, lookup, ct.Elt, et, nil)
+			specifyType(store, n, lookup, ct.Elt, et, nil)
 		default:
 			panic(fmt.Sprintf(
 				"expected slice kind but got %s",
@@ -2317,14 +2500,14 @@ func specifyType(store Store, lookup map[Name]Type, tmpl Type, spec Type, specTy
 	case *MapType:
 		switch mt := baseOf(spec).(type) {
 		case *MapType:
-			specifyType(store, lookup, ct.Key, mt.Key, nil)
-			specifyType(store, lookup, ct.Value, mt.Value, nil)
+			specifyType(store, n, lookup, ct.Key, mt.Key, nil)
+			specifyType(store, n, lookup, ct.Value, mt.Value, nil)
 		case *NativeType:
 			// NOTE: see note about type-checking.
 			kt := mt.Key()
 			vt := mt.Elem()
-			specifyType(store, lookup, ct.Key, kt, nil)
-			specifyType(store, lookup, ct.Value, vt, nil)
+			specifyType(store, n, lookup, ct.Key, kt, nil)
+			specifyType(store, n, lookup, ct.Value, vt, nil)
 		default:
 			panic(fmt.Sprintf(
 				"expected map kind but got %s",
@@ -2363,7 +2546,7 @@ func specifyType(store Store, lookup map[Name]Type, tmpl Type, spec Type, specTy
 				generic := ct.Generic[:len(ct.Generic)-len(".Elem()")]
 				match, ok := lookup[generic]
 				if ok {
-					checkType(spec, match.Elem(), false)
+					assertAssignableTo(n, spec, match.Elem(), false)
 					return // ok
 				} else {
 					// Panic here, because we don't know whether T
@@ -2377,7 +2560,7 @@ func specifyType(store Store, lookup map[Name]Type, tmpl Type, spec Type, specTy
 			} else {
 				match, ok := lookup[ct.Generic]
 				if ok {
-					checkType(spec, match, false)
+					assertAssignableTo(n, spec, match, false)
 					return // ok
 				} else {
 					if isUntyped(spec) {
@@ -2395,9 +2578,9 @@ func specifyType(store Store, lookup map[Name]Type, tmpl Type, spec Type, specTy
 		switch cbt := baseOf(spec).(type) {
 		case *NativeType:
 			gnoType := store.Go2GnoType(cbt.Type)
-			specifyType(store, lookup, ct.Type, gnoType, nil)
+			specifyType(store, n, lookup, ct.Type, gnoType, nil)
 		default:
-			specifyType(store, lookup, ct.Type, cbt, nil)
+			specifyType(store, n, lookup, ct.Type, cbt, nil)
 		}
 	default:
 		// ignore, no generics.

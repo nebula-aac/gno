@@ -273,7 +273,7 @@ func (proof *RangeProof) _computeRootHash() (rootHash []byte, treeEnd bool, err 
 				return nil, treeEnd, false, errors.Wrap(err, "recursive COMPUTEHASH call")
 			}
 			if !bytes.Equal(derivedRoot, lpath.Right) {
-				return nil, treeEnd, false, errors.Wrap(ErrInvalidRoot, "intermediate root hash %X doesn't match, got %X", lpath.Right, derivedRoot)
+				return nil, treeEnd, false, errors.Wrapf(ErrInvalidRoot, "intermediate root hash %X doesn't match, got %X", lpath.Right, derivedRoot)
 			}
 			if done {
 				return hash, treeEnd, true, nil
@@ -299,7 +299,7 @@ func (proof *RangeProof) _computeRootHash() (rootHash []byte, treeEnd bool, err 
 	return rootHash, treeEnd, nil
 }
 
-///////////////////////////////////////////////////////////////////////////////
+// -----------
 
 // keyStart is inclusive and keyEnd is exclusive.
 // If keyStart or keyEnd don't exist, the leaf before keyStart
@@ -442,7 +442,7 @@ func (t *ImmutableTree) getRangeProof(keyStart, keyEnd []byte, limit int) (proof
 	}, keys, values, nil
 }
 
-//----------------------------------------
+// ----------------------------------------
 
 // GetWithProof gets the value under the key if it exists, or returns nil.
 // A proof of existence or absence is returned alongside the value.

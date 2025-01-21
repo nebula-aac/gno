@@ -1,9 +1,11 @@
-# generate docs and publish on gh-pages branch
-name: gh-pages
+# generate Go docs and publish on gh-pages branch
+# Live at: https://gnolang.github.io/gno
+name: Go Reference Docs Deployment
 
 on:
   push:
-    branches: [ "master" ]
+    branches:
+      - master
   workflow_dispatch:
 
 permissions:
@@ -21,14 +23,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: "cd misc/devdeps && make install"
-      - run: "cd misc/gendocs && make gen"
-      - run: "find docs/ -type f -ls"
-      - uses: actions/configure-pages@v3
-        id: pages
-      - uses: actions/upload-pages-artifact@v2
+      - uses: actions/setup-go@v5
         with:
-          path: ./misc/gendocs/godoc
+          go-version-file: go.mod
+      - run: echo "GOROOT=$(go env GOROOT)" >> $GITHUB_ENV
+      - run: echo $GOROOT
+      - run: "cd misc/stdlib_diff && make gen"
+      - run: "cd misc/gendocs && make install gen"
+      - run: "mkdir -p pages_output/stdlib_diff"
+      - run: |
+          cp -r misc/gendocs/godoc/* pages_output/
+          cp -r misc/stdlib_diff/stdlib_diff/* pages_output/stdlib_diff/
+      - uses: actions/configure-pages@v5
+        id: pages
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./pages_output
 
   deploy:
     if: ${{ github.repository == 'gnolang/gno' }} # Alternatively, validate based on provided tokens and permissions.
@@ -38,5 +48,5 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     needs: build
     steps:
-      - uses: actions/deploy-pages@v2
+      - uses: actions/deploy-pages@v4
         id: deployment

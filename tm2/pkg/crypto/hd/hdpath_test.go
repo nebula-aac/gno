@@ -17,7 +17,7 @@ func mnemonicToSeed(mnemonic string) []byte {
 	return bip39.NewSeed(mnemonic, defaultBIP39Passphrase)
 }
 
-func ExampleStringifyPathParams() {
+func ExampleNewParams() {
 	path := NewParams(44, 0, 0, false, 0)
 	fmt.Println(path.String())
 	path = NewParams(44, 33, 7, true, 9)
@@ -34,6 +34,8 @@ const (
 )
 
 func TestStringifyFundraiserPathParams(t *testing.T) {
+	t.Parallel()
+
 	path := NewFundraiserParams(4, testCoinType, 22)
 	require.Equal(t, "44'/118'/4'/0/22", path.String())
 
@@ -45,6 +47,8 @@ func TestStringifyFundraiserPathParams(t *testing.T) {
 }
 
 func TestPathToArray(t *testing.T) {
+	t.Parallel()
+
 	path := NewParams(44, 118, 1, false, 4)
 	require.Equal(t, "[44 118 1 0 4]", fmt.Sprintf("%v", path.DerivationPath()))
 
@@ -53,6 +57,8 @@ func TestPathToArray(t *testing.T) {
 }
 
 func TestParamsFromPath(t *testing.T) {
+	t.Parallel()
+
 	goodCases := []struct {
 		params *BIP44Params
 		path   string
@@ -103,7 +109,7 @@ func TestParamsFromPath(t *testing.T) {
 	}
 }
 
-func ExampleSomeBIP32TestVecs() {
+func ExampleDerivePrivateKeyForPath() {
 	seed := mnemonicToSeed("barrel original fuel morning among eternal " +
 		"filter ball stove pluck matrix mechanic")
 	master, ch := ComputeMastersFromSeed(seed)

@@ -1,9 +1,12 @@
 package gnomod
 
 import (
+	"path/filepath"
 	"testing"
 
+	"github.com/gnolang/gno/tm2/pkg/testutils"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestModuleDeprecated(t *testing.T) {
@@ -164,6 +167,73 @@ func TestParseDraft(t *testing.T) {
 			f, err := Parse("in", []byte(tc.in))
 			assert.Nil(t, err)
 			assert.Equal(t, tc.expected, f.Draft)
+		})
+	}
+}
+
+func TestParseGnoMod(t *testing.T) {
+	pkgDir := "bar"
+	for _, tc := range []struct {
+		desc, modData, modPath, errShouldContain string
+	}{
+		{
+			desc:             "file not exists",
+			modData:          `module foo`,
+			modPath:          filepath.Join(pkgDir, "mod.gno"),
+			errShouldContain: "could not read gno.mod file:",
+		},
+		{
+			desc:             "file path is dir",
+			modData:          `module foo`,
+			modPath:          pkgDir,
+			errShouldContain: "is a directory",
+		},
+		{
+			desc:    "valid gno.mod file",
+			modData: `module foo`,
+			modPath: filepath.Join(pkgDir, "gno.mod"),
+		},
+		{
+			desc: "valid gno.mod file with replace",
+			modData: `module foo
+			replace bar => ../bar`,
+			modPath: filepath.Join(pkgDir, "gno.mod"),
+		},
+		{
+			desc:             "error bad module directive",
+			modData:          `module foo v0.0.0`,
+			modPath:          filepath.Join(pkgDir, "gno.mod"),
+			errShouldContain: "error parsing gno.mod file at",
+		},
+		{
+			desc:             "error gno.mod without module",
+			modData:          `replace bar => ../bar`,
+			modPath:          filepath.Join(pkgDir, "gno.mod"),
+			errShouldContain: "requires module",
+		},
+		{
+			desc: "error gno.mod with require",
+			modData: `module foo
+			require bar v0.0.0`,
+			modPath:          filepath.Join(pkgDir, "gno.mod"),
+			errShouldContain: "unknown directive: require",
+		},
+	} {
+		t.Run(tc.desc, func(t *testing.T) {
+			// Create test dir
+			tempDir, cleanUpFn := testutils.NewTestCaseDir(t)
+			require.NotNil(t, tempDir)
+			defer cleanUpFn()
+
+			// Create gno package
+			createGnoModPkg(t, tempDir, pkgDir, tc.modData)
+
+			_, err := ParseGnoMod(filepath.Join(tempDir, tc.modPath))
+			if tc.errShouldContain != "" {
+				assert.ErrorContains(t, err, tc.errShouldContain)
+			} else {
+				assert.NoError(t, err)
+			}
 		})
 	}
 }

@@ -5,13 +5,15 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/jaekwon/testify/require"
+	"github.com/stretchr/testify/require"
 
 	"github.com/gnolang/gno/tm2/pkg/amino"
 )
 
 // Tries to reproduce the bug #1036 on all registered types
 func TestAminoJSONRegisteredTypes(t *testing.T) {
+	t.Parallel()
+
 	for _, typ := range Package.Types {
 		// Instantiate registered type
 		x := reflect.New(typ.Type).Interface()

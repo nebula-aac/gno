@@ -3,12 +3,14 @@ package client
 import (
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/gnolang/gno/tm2/pkg/commands"
 	"github.com/gnolang/gno/tm2/pkg/testutils"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type testImportKeyOpts struct {
@@ -22,16 +24,16 @@ func importKey(
 	importOpts testImportKeyOpts,
 	input io.Reader,
 ) error {
-	cfg := &importCfg{
-		rootCfg: &baseCfg{
+	cfg := &ImportCfg{
+		RootCfg: &BaseCfg{
 			BaseOptions: BaseOptions{
 				Home:                  importOpts.kbHome,
 				InsecurePasswordStdin: true,
 			},
 		},
-		keyName:   importOpts.keyName,
-		armorPath: importOpts.armorPath,
-		unsafe:    importOpts.unsafe,
+		KeyName:   importOpts.keyName,
+		ArmorPath: importOpts.armorPath,
+		Unsafe:    importOpts.unsafe,
 	}
 
 	cmdIO := commands.NewTestIO()
@@ -151,4 +153,93 @@ func TestImport_ImportKey(t *testing.T) {
 			assert.NoError(t, err)
 		})
 	}
+}
+
+func TestImport_ImportKeyWithEmptyName(t *testing.T) {
+	t.Parallel()
+
+	// Generate a temporary key-base directory
+	_, kbHome := newTestKeybase(t)
+	err := importKey(
+		testImportKeyOpts{
+			testCmdKeyOptsBase: testCmdKeyOptsBase{
+				kbHome:  kbHome,
+				keyName: "",
+			},
+		},
+		nil,
+	)
+	assert.Error(t, err)
+	assert.EqualError(t, err, "name shouldn't be empty")
+}
+
+func TestImport_ImportKeyInvalidArmor(t *testing.T) {
+	t.Parallel()
+
+	_, kbHome := newTestKeybase(t)
+
+	armorFile, err := os.CreateTemp("", "armor.key")
+	require.NoError(t, err)
+
+	defer os.Remove(armorFile.Name())
+
+	// Write invalid armor
+	_, err = armorFile.Write([]byte("totally valid tendermint armor"))
+	require.NoError(t, err)
+
+	err = importKey(
+		testImportKeyOpts{
+			testCmdKeyOptsBase: testCmdKeyOptsBase{
+				kbHome:  kbHome,
+				keyName: "key-name",
+				unsafe:  true, // expect an unencrypted private key armor
+			},
+			armorPath: armorFile.Name(),
+		},
+		strings.NewReader(
+			fmt.Sprintf(
+				"%s\n%s\n",
+				"",
+				"",
+			),
+		),
+	)
+
+	assert.ErrorContains(t, err, "unable to unarmor private key")
+}
+
+func TestImport_ImportKeyInvalidPKArmor(t *testing.T) {
+	t.Parallel()
+
+	_, kbHome := newTestKeybase(t)
+
+	armorFile, err := os.CreateTemp("", "armor.key")
+	require.NoError(t, err)
+
+	defer os.Remove(armorFile.Name())
+
+	// Write invalid armor
+	_, err = armorFile.Write([]byte("totally valid tendermint armor"))
+	require.NoError(t, err)
+
+	err = importKey(
+		testImportKeyOpts{
+			testCmdKeyOptsBase: testCmdKeyOptsBase{
+				kbHome:  kbHome,
+				keyName: "key-name",
+				unsafe:  false, // expect an encrypted private key armor
+			},
+			armorPath: armorFile.Name(),
+		},
+		strings.NewReader(
+			fmt.Sprintf(
+				"%s\n%s\n%s\n",
+				"",
+				"",
+				"",
+			),
+		),
+	)
+
+	assert.ErrorContains(t, err, "unable to decrypt private key armor")
 }

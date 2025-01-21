@@ -79,7 +79,7 @@ func ParseExpr(expr string) (retx Expr, err error) {
 			if rerr, ok := r.(error); ok {
 				err = rerr
 			} else {
-				err = errors.New(fmt.Sprintf("%v", r))
+				err = fmt.Errorf("%v", r)
 			}
 			return
 		}
@@ -96,11 +96,16 @@ func MustParseExpr(expr string) Expr {
 	return x
 }
 
-// filename must not include the path.
+// ParseFile uses the Go parser to parse body. It then runs [Go2Gno] on the
+// resulting AST -- the resulting FileNode is returned, together with any other
+// error (including panics, which are recovered) from [Go2Gno].
 func ParseFile(filename string, body string) (fn *FileNode, err error) {
-	// Parse src but stop after processing the imports.
+	// Use go parser to parse the body.
 	fs := token.NewFileSet()
-	f, err := parser.ParseFile(fs, filename, body, parser.ParseComments|parser.DeclarationErrors)
+	// TODO(morgan): would be nice to add parser.SkipObjectResolution as we don't
+	// seem to be using its features, but this breaks when testing (specifically redeclaration tests).
+	const parseOpts = parser.ParseComments | parser.DeclarationErrors
+	f, err := parser.ParseFile(fs, filename, body, parseOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -112,9 +117,9 @@ func ParseFile(filename string, body string) (fn *FileNode, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			if rerr, ok := r.(error); ok {
-				err = rerr
+				err = errors.Wrap(rerr, "parsing file")
 			} else {
-				err = errors.New(fmt.Sprintf("%v", r))
+				err = errors.New(fmt.Sprintf("%v", r)).Stacktrace()
 			}
 			return
 		}
@@ -128,6 +133,7 @@ func ParseFile(filename string, body string) (fn *FileNode, err error) {
 func setLoc(fs *token.FileSet, pos token.Pos, n Node) Node {
 	posn := fs.Position(pos)
 	n.SetLine(posn.Line)
+	n.SetColumn(posn.Column)
 	return n
 }
 
@@ -219,6 +225,8 @@ func Go2Gno(fs *token.FileSet, gon ast.Node) (n Node) {
 		}
 	case *ast.FuncLit:
 		type_ := Go2Gno(fs, gon.Type).(*FuncTypeExpr)
+		type_.IsClosure = true
+
 		return &FuncLitExpr{
 			Type: *type_,
 			Body: toBody(fs, gon.Body),
@@ -431,7 +439,10 @@ func Go2Gno(fs *token.FileSet, gon ast.Node) (n Node) {
 		}
 		name := toName(gon.Name)
 		type_ := Go2Gno(fs, gon.Type).(*FuncTypeExpr)
-		body := Go2Gno(fs, gon.Body).(*BlockStmt).Body
+		var body []Stmt
+		if gon.Body != nil {
+			body = Go2Gno(fs, gon.Body).(*BlockStmt).Body
+		}
 		return &FuncDecl{
 			IsMethod: isMethod,
 			Recv:     recv,
@@ -456,6 +467,8 @@ func Go2Gno(fs *token.FileSet, gon ast.Node) (n Node) {
 			PkgName: pkgName,
 			Decls:   decls,
 		}
+	case *ast.EmptyStmt:
+		return &EmptyStmt{}
 	default:
 		panic(fmt.Sprintf("unknown Go type %v: %s\n",
 			reflect.TypeOf(gon),
@@ -625,11 +638,13 @@ func toDecls(fs *token.FileSet, gd *ast.GenDecl) (ds Decls) {
 			name := toName(s.Name)
 			tipe := toExpr(fs, s.Type)
 			alias := s.Assign != 0
-			ds = append(ds, &TypeDecl{
+			td := &TypeDecl{
 				NameExpr: NameExpr{Name: name},
 				Type:     tipe,
 				IsAlias:  alias,
-			})
+			}
+			setLoc(fs, s.Pos(), td)
+			ds = append(ds, td)
 		case *ast.ValueSpec:
 			if gd.Tok == token.CONST {
 				var names []NameExpr
@@ -657,6 +672,7 @@ func toDecls(fs *token.FileSet, gd *ast.GenDecl) (ds Decls) {
 					Const:     true,
 				}
 				cd.SetAttribute(ATTR_IOTA, si)
+				setLoc(fs, s.Pos(), cd)
 				ds = append(ds, cd)
 			} else {
 				var names []NameExpr
@@ -675,6 +691,7 @@ func toDecls(fs *token.FileSet, gd *ast.GenDecl) (ds Decls) {
 					Values:    values,
 					Const:     false,
 				}
+				setLoc(fs, s.Pos(), vd)
 				ds = append(ds, vd)
 			}
 		case *ast.ImportSpec:
@@ -682,16 +699,19 @@ func toDecls(fs *token.FileSet, gd *ast.GenDecl) (ds Decls) {
 			if err != nil {
 				panic("unexpected import spec path type")
 			}
-			ds = append(ds, &ImportDecl{
+			im := &ImportDecl{
 				NameExpr: *Nx(toName(s.Name)),
 				PkgPath:  path,
-			})
+			}
+			setLoc(fs, s.Pos(), im)
+			ds = append(ds, im)
 		default:
 			panic(fmt.Sprintf(
 				"unexpected decl spec %v",
 				reflect.TypeOf(s)))
 		}
 	}
+
 	return ds
 }
 

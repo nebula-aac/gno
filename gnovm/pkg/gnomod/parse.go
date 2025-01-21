@@ -42,6 +42,34 @@ func ParseAt(dir string) (*File, error) {
 	return gm, nil
 }
 
+// tries to parse gno mod file given the filename, using Parse and Validate from
+// the gnomod package
+//
+// TODO(tb): replace by `gnomod.ParseAt` ? The key difference is the latter
+// looks for gno.mod in parent directories, while this function doesn't.
+func ParseGnoMod(fname string) (*File, error) {
+	file, err := os.Stat(fname)
+	if err != nil {
+		return nil, fmt.Errorf("could not read gno.mod file: %w", err)
+	}
+	if file.IsDir() {
+		return nil, fmt.Errorf("invalid gno.mod at %q: is a directory", fname)
+	}
+
+	b, err := os.ReadFile(fname)
+	if err != nil {
+		return nil, fmt.Errorf("could not read gno.mod file: %w", err)
+	}
+	gm, err := Parse(fname, b)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing gno.mod file at %q: %w", fname, err)
+	}
+	if err := gm.Validate(); err != nil {
+		return nil, fmt.Errorf("error validating gno.mod file at %q: %w", fname, err)
+	}
+	return gm, nil
+}
+
 // Parse parses and returns a gno.mod file.
 //
 // - file is the name of the file, used in positions and errors.
@@ -77,7 +105,7 @@ func Parse(file string, data []byte) (*File, error) {
 					Err:      fmt.Errorf("unknown block type: %s", strings.Join(x.Token, " ")),
 				})
 				continue
-			case "module", "require", "replace":
+			case "module", "replace":
 				for _, l := range x.Line {
 					f.add(&errs, x, l, x.Token[0], l.Token)
 				}
@@ -151,26 +179,6 @@ func (f *File) add(errs *modfile.ErrorList, block *modfile.LineBlock, line *modf
 			return
 		}
 		f.Module.Mod = module.Version{Path: s}
-
-	case "require":
-		if len(args) != 2 {
-			errorf("usage: %s module/path v1.2.3", verb)
-			return
-		}
-		s, err := parseString(&args[0])
-		if err != nil {
-			errorf("invalid quoted string: %v", err)
-			return
-		}
-		v, err := parseVersion(verb, s, &args[1])
-		if err != nil {
-			wrapError(err)
-			return
-		}
-		f.Require = append(f.Require, &modfile.Require{
-			Mod:    module.Version{Path: s, Version: v},
-			Syntax: line,
-		})
 
 	case "replace":
 		replace, wrappederr := parseReplace(f.Syntax.Name, line, verb, args)

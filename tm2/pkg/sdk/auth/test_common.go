@@ -4,10 +4,10 @@ import (
 	abci "github.com/gnolang/gno/tm2/pkg/bft/abci/types"
 	bft "github.com/gnolang/gno/tm2/pkg/bft/types"
 	"github.com/gnolang/gno/tm2/pkg/crypto"
-	dbm "github.com/gnolang/gno/tm2/pkg/db"
+	"github.com/gnolang/gno/tm2/pkg/db/memdb"
 	"github.com/gnolang/gno/tm2/pkg/log"
-
 	"github.com/gnolang/gno/tm2/pkg/sdk"
+	"github.com/gnolang/gno/tm2/pkg/sdk/params"
 	"github.com/gnolang/gno/tm2/pkg/std"
 	"github.com/gnolang/gno/tm2/pkg/store"
 	"github.com/gnolang/gno/tm2/pkg/store/iavl"
@@ -17,37 +17,11 @@ type testEnv struct {
 	ctx  sdk.Context
 	acck AccountKeeper
 	bank BankKeeperI
-}
-
-// moduleAccount defines an account for modules that holds coins on a pool
-type moduleAccount struct {
-	*std.BaseAccount
-	name        string   `json:"name" yaml:"name"`              // name of the module
-	permissions []string `json:"permissions" yaml"permissions"` // permissions of module account
-}
-
-// HasPermission returns whether or not the module account has permission.
-func (ma moduleAccount) HasPermission(permission string) bool {
-	for _, perm := range ma.permissions {
-		if perm == permission {
-			return true
-		}
-	}
-	return false
-}
-
-// GetName returns the the name of the holder's module
-func (ma moduleAccount) GetName() string {
-	return ma.name
-}
-
-// GetPermissions returns permissions granted to the module account
-func (ma moduleAccount) GetPermissions() []string {
-	return ma.permissions
+	gk   GasPriceKeeper
 }
 
 func setupTestEnv() testEnv {
-	db := dbm.NewMemDB()
+	db := memdb.NewMemDB()
 
 	authCapKey := store.NewStoreKey("authCapKey")
 
@@ -55,10 +29,12 @@ func setupTestEnv() testEnv {
 	ms.MountStoreWithDB(authCapKey, iavl.StoreConstructor, db)
 	ms.LoadLatestVersion()
 
-	acck := NewAccountKeeper(authCapKey, std.ProtoBaseAccount)
+	paramk := params.NewParamsKeeper(authCapKey, "")
+	acck := NewAccountKeeper(authCapKey, paramk, std.ProtoBaseAccount)
 	bank := NewDummyBankKeeper(acck)
+	gk := NewGasPriceKeeper(authCapKey)
 
-	ctx := sdk.NewContext(sdk.RunTxModeDeliver, ms, &bft.Header{Height: 1, ChainID: "test-chain-id"}, log.NewNopLogger())
+	ctx := sdk.NewContext(sdk.RunTxModeDeliver, ms, &bft.Header{Height: 1, ChainID: "test-chain-id"}, log.NewNoopLogger())
 	ctx = ctx.WithValue(AuthParamsContextKey{}, DefaultParams())
 	ctx = ctx.WithConsensusParams(&abci.ConsensusParams{
 		Block: &abci.BlockParams{
@@ -73,7 +49,7 @@ func setupTestEnv() testEnv {
 		},
 	})
 
-	return testEnv{ctx: ctx, acck: acck, bank: bank}
+	return testEnv{ctx: ctx, acck: acck, bank: bank, gk: gk}
 }
 
 // DummyBankKeeper defines a supply keeper used only for testing to avoid

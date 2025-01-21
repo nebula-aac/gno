@@ -21,14 +21,14 @@ func Test_execVerify(t *testing.T) {
 	defer kbCleanUp()
 
 	// initialize test options
-	cfg := &verifyCfg{
-		rootCfg: &baseCfg{
+	cfg := &VerifyCfg{
+		RootCfg: &BaseCfg{
 			BaseOptions: BaseOptions{
 				Home:                  kbHome,
 				InsecurePasswordStdin: true,
 			},
 		},
-		docPath: "",
+		DocPath: "",
 	}
 
 	io := commands.NewTestIO()
@@ -45,7 +45,7 @@ func Test_execVerify(t *testing.T) {
 	assert.NoError(t, err)
 
 	// sign test message.
-	priv, err := kb.ExportPrivateKeyObject(fakeKeyName1, encPassword)
+	priv, err := kb.ExportPrivKey(fakeKeyName1, encPassword)
 	assert.NoError(t, err)
 	testSig, err := priv.Sign([]byte(testMsg))
 	assert.NoError(t, err)

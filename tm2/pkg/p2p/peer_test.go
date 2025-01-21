@@ -1,226 +1,630 @@
 package p2p
 
 import (
+	"errors"
 	"fmt"
-	golog "log"
+	"io"
+	"log/slog"
 	"net"
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
-	"github.com/gnolang/gno/tm2/pkg/crypto"
-	"github.com/gnolang/gno/tm2/pkg/crypto/ed25519"
-	"github.com/gnolang/gno/tm2/pkg/errors"
-	"github.com/gnolang/gno/tm2/pkg/log"
+	"github.com/gnolang/gno/tm2/pkg/cmap"
 	"github.com/gnolang/gno/tm2/pkg/p2p/config"
 	"github.com/gnolang/gno/tm2/pkg/p2p/conn"
+	"github.com/gnolang/gno/tm2/pkg/p2p/mock"
+	"github.com/gnolang/gno/tm2/pkg/p2p/types"
+	"github.com/gnolang/gno/tm2/pkg/service"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestPeerBasic(t *testing.T) {
-	assert, require := assert.New(t), require.New(t)
+func TestPeer_Properties(t *testing.T) {
+	t.Parallel()
 
-	// simulate remote peer
-	rp := &remotePeer{PrivKey: ed25519.GenPrivKey(), Config: cfg}
-	rp.Start()
-	defer rp.Stop()
+	t.Run("connection info", func(t *testing.T) {
+		t.Parallel()
 
-	p, err := createOutboundPeerAndPerformHandshake(rp.Addr(), cfg, conn.DefaultMConnConfig())
-	require.Nil(err)
+		t.Run("remote IP", func(t *testing.T) {
+			t.Parallel()
 
-	err = p.Start()
-	require.Nil(err)
-	defer p.Stop()
+			var (
+				info = &ConnInfo{
+					RemoteIP: net.IP{127, 0, 0, 1},
+				}
 
-	assert.True(p.IsRunning())
-	assert.True(p.IsOutbound())
-	assert.False(p.IsPersistent())
-	p.persistent = true
-	assert.True(p.IsPersistent())
-	assert.Equal(rp.Addr().DialString(), p.RemoteAddr().String())
-	assert.Equal(rp.ID(), p.ID())
-}
+				p = &peer{
+					connInfo: info,
+				}
+			)
 
-func TestPeerSend(t *testing.T) {
-	assert, require := assert.New(t), require.New(t)
+			assert.Equal(t, info.RemoteIP, p.RemoteIP())
+		})
 
-	config := cfg
+		t.Run("remote address", func(t *testing.T) {
+			t.Parallel()
 
-	// simulate remote peer
-	rp := &remotePeer{PrivKey: ed25519.GenPrivKey(), Config: config}
-	rp.Start()
-	defer rp.Stop()
+			tcpAddr, err := net.ResolveTCPAddr("tcp", "localhost:8080")
+			require.NoError(t, err)
 
-	p, err := createOutboundPeerAndPerformHandshake(rp.Addr(), config, conn.DefaultMConnConfig())
-	require.Nil(err)
+			var (
+				info = &ConnInfo{
+					Conn: &mock.Conn{
+						RemoteAddrFn: func() net.Addr {
+							return tcpAddr
+						},
+					},
+				}
 
-	err = p.Start()
-	require.Nil(err)
+				p = &peer{
+					connInfo: info,
+				}
+			)
 
-	defer p.Stop()
+			assert.Equal(t, tcpAddr.String(), p.RemoteAddr().String())
+		})
 
-	assert.True(p.CanSend(testCh))
-	assert.True(p.Send(testCh, []byte("Asylum")))
-}
+		t.Run("socket address", func(t *testing.T) {
+			t.Parallel()
 
-func createOutboundPeerAndPerformHandshake(
-	addr *NetAddress,
-	config *config.P2PConfig,
-	mConfig conn.MConnConfig,
-) (*peer, error) {
-	chDescs := []*conn.ChannelDescriptor{
-		{ID: testCh, Priority: 1},
-	}
-	reactorsByCh := map[byte]Reactor{testCh: NewTestReactor(chDescs, true)}
-	pk := ed25519.GenPrivKey()
-	pc, err := testOutboundPeerConn(addr, config, false, pk)
-	if err != nil {
-		return nil, err
-	}
-	timeout := 1 * time.Second
-	ourNodeInfo := testNodeInfo(addr.ID, "host_peer")
-	peerNodeInfo, err := handshake(pc.conn, timeout, ourNodeInfo)
-	if err != nil {
-		return nil, err
-	}
+			tcpAddr, err := net.ResolveTCPAddr("tcp", "localhost:8080")
+			require.NoError(t, err)
 
-	p := newPeer(pc, mConfig, peerNodeInfo, reactorsByCh, chDescs, func(p Peer, r interface{}) {})
-	p.SetLogger(log.TestingLogger().With("peer", addr))
-	return p, nil
-}
+			netAddr, err := types.NewNetAddress(types.GenerateNodeKey().ID(), tcpAddr)
+			require.NoError(t, err)
 
-func testDial(addr *NetAddress, cfg *config.P2PConfig) (net.Conn, error) {
-	if cfg.TestDialFail {
-		return nil, fmt.Errorf("dial err (peerConfig.DialFail == true)")
-	}
+			var (
+				info = &ConnInfo{
+					SocketAddr: netAddr,
+				}
 
-	conn, err := addr.DialTimeout(cfg.DialTimeout)
-	if err != nil {
-		return nil, err
-	}
-	return conn, nil
-}
+				p = &peer{
+					connInfo: info,
+				}
+			)
 
-func testOutboundPeerConn(
-	addr *NetAddress,
-	config *config.P2PConfig,
-	persistent bool,
-	ourNodePrivKey crypto.PrivKey,
-) (peerConn, error) {
-	var pc peerConn
-	conn, err := testDial(addr, config)
-	if err != nil {
-		return pc, errors.Wrap(err, "Error creating peer")
-	}
+			assert.Equal(t, netAddr.String(), p.SocketAddr().String())
+		})
 
-	pc, err = testPeerConn(conn, config, true, persistent, ourNodePrivKey, addr)
-	if err != nil {
-		if cerr := conn.Close(); cerr != nil {
-			return pc, errors.Wrap(err, cerr.Error())
-		}
-		return pc, err
-	}
+		t.Run("set logger", func(t *testing.T) {
+			t.Parallel()
 
-	// ensure dialed ID matches connection ID
-	if addr.ID != pc.ID() {
-		if cerr := conn.Close(); cerr != nil {
-			return pc, errors.Wrap(err, cerr.Error())
-		}
-		return pc, SwitchAuthenticationFailureError{addr, pc.ID()}
-	}
+			var (
+				l = slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	return pc, nil
-}
+				p = &peer{
+					mConn: &mock.MConn{},
+				}
+			)
 
-type remotePeer struct {
-	PrivKey    crypto.PrivKey
-	Config     *config.P2PConfig
-	addr       *NetAddress
-	channels   []byte
-	listenAddr string
-	listener   net.Listener
-}
+			p.SetLogger(l)
 
-func (rp *remotePeer) Addr() *NetAddress {
-	return rp.addr
-}
+			assert.Equal(t, l, p.Logger)
+		})
 
-func (rp *remotePeer) ID() ID {
-	return rp.PrivKey.PubKey().Address().ID()
-}
+		t.Run("peer start", func(t *testing.T) {
+			t.Parallel()
 
-func (rp *remotePeer) Start() {
-	if rp.listenAddr == "" {
-		rp.listenAddr = "127.0.0.1:0"
-	}
+			var (
+				expectedErr = errors.New("some error")
 
-	l, e := net.Listen("tcp", rp.listenAddr) // any available address
-	if e != nil {
-		golog.Fatalf("net.Listen tcp :0: %+v", e)
-	}
-	rp.listener = l
-	rp.addr = NewNetAddress(rp.PrivKey.PubKey().Address().ID(), l.Addr())
-	if rp.channels == nil {
-		rp.channels = []byte{testCh}
-	}
-	go rp.accept()
-}
+				mConn = &mock.MConn{
+					StartFn: func() error {
+						return expectedErr
+					},
+				}
 
-func (rp *remotePeer) Stop() {
-	rp.listener.Close()
-}
+				p = &peer{
+					mConn: mConn,
+				}
+			)
 
-func (rp *remotePeer) Dial(addr *NetAddress) (net.Conn, error) {
-	conn, err := addr.DialTimeout(1 * time.Second)
-	if err != nil {
-		return nil, err
-	}
-	pc, err := testInboundPeerConn(conn, rp.Config, rp.PrivKey)
-	if err != nil {
-		return nil, err
-	}
-	_, err = handshake(pc.conn, time.Second, rp.nodeInfo())
-	if err != nil {
-		return nil, err
-	}
-	return conn, err
-}
+			assert.ErrorIs(t, p.OnStart(), expectedErr)
+		})
 
-func (rp *remotePeer) accept() {
-	conns := []net.Conn{}
+		t.Run("peer stop", func(t *testing.T) {
+			t.Parallel()
 
-	for {
-		conn, err := rp.listener.Accept()
-		if err != nil {
-			golog.Printf("Failed to accept conn: %+v", err)
-			for _, conn := range conns {
-				_ = conn.Close()
+			var (
+				stopCalled  = false
+				expectedErr = errors.New("some error")
+
+				mConn = &mock.MConn{
+					StopFn: func() error {
+						stopCalled = true
+
+						return expectedErr
+					},
+				}
+
+				p = &peer{
+					mConn: mConn,
+				}
+			)
+
+			p.BaseService = *service.NewBaseService(nil, "Peer", p)
+
+			p.OnStop()
+
+			assert.True(t, stopCalled)
+		})
+
+		t.Run("flush stop", func(t *testing.T) {
+			t.Parallel()
+
+			var (
+				stopCalled = false
+
+				mConn = &mock.MConn{
+					FlushFn: func() {
+						stopCalled = true
+					},
+				}
+
+				p = &peer{
+					mConn: mConn,
+				}
+			)
+
+			p.BaseService = *service.NewBaseService(nil, "Peer", p)
+
+			p.FlushStop()
+
+			assert.True(t, stopCalled)
+		})
+
+		t.Run("node info fetch", func(t *testing.T) {
+			t.Parallel()
+
+			var (
+				info = types.NodeInfo{
+					Network: "gnoland",
+				}
+
+				p = &peer{
+					nodeInfo: info,
+				}
+			)
+
+			assert.Equal(t, info, p.NodeInfo())
+		})
+
+		t.Run("node status fetch", func(t *testing.T) {
+			t.Parallel()
+
+			var (
+				status = conn.ConnectionStatus{
+					Duration: 5 * time.Second,
+				}
+
+				mConn = &mock.MConn{
+					StatusFn: func() conn.ConnectionStatus {
+						return status
+					},
+				}
+
+				p = &peer{
+					mConn: mConn,
+				}
+			)
+
+			assert.Equal(t, status, p.Status())
+		})
+
+		t.Run("string representation", func(t *testing.T) {
+			t.Parallel()
+
+			testTable := []struct {
+				name     string
+				outbound bool
+			}{
+				{
+					"outbound",
+					true,
+				},
+				{
+					"inbound",
+					false,
+				},
 			}
-			return
-		}
 
-		pc, err := testInboundPeerConn(conn, rp.Config, rp.PrivKey)
-		if err != nil {
-			golog.Fatalf("Failed to create a peer: %+v", err)
-		}
+			for _, testCase := range testTable {
+				t.Run(testCase.name, func(t *testing.T) {
+					t.Parallel()
 
-		_, err = handshake(pc.conn, time.Second, rp.nodeInfo())
-		if err != nil {
-			golog.Fatalf("Failed to perform handshake: %+v", err)
-		}
+					var (
+						id       = types.GenerateNodeKey().ID()
+						mConnStr = "description"
 
-		conns = append(conns, conn)
-	}
+						p = &peer{
+							mConn: &mock.MConn{
+								StringFn: func() string {
+									return mConnStr
+								},
+							},
+							nodeInfo: types.NodeInfo{
+								PeerID: id,
+							},
+							connInfo: &ConnInfo{
+								Outbound: testCase.outbound,
+							},
+						}
+
+						direction = "in"
+					)
+
+					if testCase.outbound {
+						direction = "out"
+					}
+
+					assert.Contains(
+						t,
+						p.String(),
+						fmt.Sprintf(
+							"Peer{%s %s %s}",
+							mConnStr,
+							id,
+							direction,
+						),
+					)
+				})
+			}
+		})
+
+		t.Run("outbound information", func(t *testing.T) {
+			t.Parallel()
+
+			p := &peer{
+				connInfo: &ConnInfo{
+					Outbound: true,
+				},
+			}
+
+			assert.True(
+				t,
+				p.IsOutbound(),
+			)
+		})
+
+		t.Run("persistent information", func(t *testing.T) {
+			t.Parallel()
+
+			p := &peer{
+				connInfo: &ConnInfo{
+					Persistent: true,
+				},
+			}
+
+			assert.True(t, p.IsPersistent())
+		})
+
+		t.Run("initial conn close", func(t *testing.T) {
+			t.Parallel()
+
+			var (
+				closeErr = errors.New("close error")
+
+				mockConn = &mock.Conn{
+					CloseFn: func() error {
+						return closeErr
+					},
+				}
+
+				p = &peer{
+					connInfo: &ConnInfo{
+						Conn: mockConn,
+					},
+				}
+			)
+
+			assert.ErrorIs(t, p.CloseConn(), closeErr)
+		})
+	})
 }
 
-func (rp *remotePeer) nodeInfo() NodeInfo {
-	return NodeInfo{
-		VersionSet: testVersionSet(),
-		NetAddress: rp.Addr(),
-		Network:    "testing",
-		Version:    "1.2.3-rc0-deadbeef",
-		Channels:   rp.channels,
-		Moniker:    "remote_peer",
-	}
+func TestPeer_GetSet(t *testing.T) {
+	t.Parallel()
+
+	var (
+		key  = "key"
+		data = []byte("random")
+
+		p = &peer{
+			data: cmap.NewCMap(),
+		}
+	)
+
+	assert.Nil(t, p.Get(key))
+
+	// Set the key
+	p.Set(key, data)
+
+	assert.Equal(t, data, p.Get(key))
+}
+
+func TestPeer_Send(t *testing.T) {
+	t.Parallel()
+
+	t.Run("peer not running", func(t *testing.T) {
+		t.Parallel()
+
+		var (
+			chID = byte(10)
+			data = []byte("random")
+
+			capturedSendID   byte
+			capturedSendData []byte
+
+			mockConn = &mock.MConn{
+				SendFn: func(c byte, d []byte) bool {
+					capturedSendID = c
+					capturedSendData = d
+
+					return true
+				},
+			}
+
+			p = &peer{
+				nodeInfo: types.NodeInfo{
+					Channels: []byte{
+						chID,
+					},
+				},
+				mConn: mockConn,
+			}
+		)
+
+		p.BaseService = *service.NewBaseService(nil, "Peer", p)
+
+		// Make sure the send fails
+		require.False(t, p.Send(chID, data))
+
+		assert.Empty(t, capturedSendID)
+		assert.Nil(t, capturedSendData)
+	})
+
+	t.Run("peer doesn't have channel", func(t *testing.T) {
+		t.Parallel()
+
+		var (
+			chID = byte(10)
+			data = []byte("random")
+
+			capturedSendID   byte
+			capturedSendData []byte
+
+			mockConn = &mock.MConn{
+				SendFn: func(c byte, d []byte) bool {
+					capturedSendID = c
+					capturedSendData = d
+
+					return true
+				},
+			}
+
+			p = &peer{
+				nodeInfo: types.NodeInfo{
+					Channels: []byte{},
+				},
+				mConn: mockConn,
+			}
+		)
+
+		p.BaseService = *service.NewBaseService(nil, "Peer", p)
+
+		// Start the peer "multiplexing"
+		require.NoError(t, p.Start())
+		t.Cleanup(func() {
+			require.NoError(t, p.Stop())
+		})
+
+		// Make sure the send fails
+		require.False(t, p.Send(chID, data))
+
+		assert.Empty(t, capturedSendID)
+		assert.Nil(t, capturedSendData)
+	})
+
+	t.Run("valid peer data send", func(t *testing.T) {
+		t.Parallel()
+
+		var (
+			chID = byte(10)
+			data = []byte("random")
+
+			capturedSendID   byte
+			capturedSendData []byte
+
+			mockConn = &mock.MConn{
+				SendFn: func(c byte, d []byte) bool {
+					capturedSendID = c
+					capturedSendData = d
+
+					return true
+				},
+			}
+
+			p = &peer{
+				nodeInfo: types.NodeInfo{
+					Channels: []byte{
+						chID,
+					},
+				},
+				mConn: mockConn,
+			}
+		)
+
+		p.BaseService = *service.NewBaseService(nil, "Peer", p)
+
+		// Start the peer "multiplexing"
+		require.NoError(t, p.Start())
+		t.Cleanup(func() {
+			require.NoError(t, p.Stop())
+		})
+
+		// Make sure the send is valid
+		require.True(t, p.Send(chID, data))
+
+		assert.Equal(t, chID, capturedSendID)
+		assert.Equal(t, data, capturedSendData)
+	})
+}
+
+func TestPeer_TrySend(t *testing.T) {
+	t.Parallel()
+
+	t.Run("peer not running", func(t *testing.T) {
+		t.Parallel()
+
+		var (
+			chID = byte(10)
+			data = []byte("random")
+
+			capturedSendID   byte
+			capturedSendData []byte
+
+			mockConn = &mock.MConn{
+				TrySendFn: func(c byte, d []byte) bool {
+					capturedSendID = c
+					capturedSendData = d
+
+					return true
+				},
+			}
+
+			p = &peer{
+				nodeInfo: types.NodeInfo{
+					Channels: []byte{
+						chID,
+					},
+				},
+				mConn: mockConn,
+			}
+		)
+
+		p.BaseService = *service.NewBaseService(nil, "Peer", p)
+
+		// Make sure the send fails
+		require.False(t, p.TrySend(chID, data))
+
+		assert.Empty(t, capturedSendID)
+		assert.Nil(t, capturedSendData)
+	})
+
+	t.Run("peer doesn't have channel", func(t *testing.T) {
+		t.Parallel()
+
+		var (
+			chID = byte(10)
+			data = []byte("random")
+
+			capturedSendID   byte
+			capturedSendData []byte
+
+			mockConn = &mock.MConn{
+				TrySendFn: func(c byte, d []byte) bool {
+					capturedSendID = c
+					capturedSendData = d
+
+					return true
+				},
+			}
+
+			p = &peer{
+				nodeInfo: types.NodeInfo{
+					Channels: []byte{},
+				},
+				mConn: mockConn,
+			}
+		)
+
+		p.BaseService = *service.NewBaseService(nil, "Peer", p)
+
+		// Start the peer "multiplexing"
+		require.NoError(t, p.Start())
+		t.Cleanup(func() {
+			require.NoError(t, p.Stop())
+		})
+
+		// Make sure the send fails
+		require.False(t, p.TrySend(chID, data))
+
+		assert.Empty(t, capturedSendID)
+		assert.Nil(t, capturedSendData)
+	})
+
+	t.Run("valid peer data send", func(t *testing.T) {
+		t.Parallel()
+
+		var (
+			chID = byte(10)
+			data = []byte("random")
+
+			capturedSendID   byte
+			capturedSendData []byte
+
+			mockConn = &mock.MConn{
+				TrySendFn: func(c byte, d []byte) bool {
+					capturedSendID = c
+					capturedSendData = d
+
+					return true
+				},
+			}
+
+			p = &peer{
+				nodeInfo: types.NodeInfo{
+					Channels: []byte{
+						chID,
+					},
+				},
+				mConn: mockConn,
+			}
+		)
+
+		p.BaseService = *service.NewBaseService(nil, "Peer", p)
+
+		// Start the peer "multiplexing"
+		require.NoError(t, p.Start())
+		t.Cleanup(func() {
+			require.NoError(t, p.Stop())
+		})
+
+		// Make sure the send is valid
+		require.True(t, p.TrySend(chID, data))
+
+		assert.Equal(t, chID, capturedSendID)
+		assert.Equal(t, data, capturedSendData)
+	})
+}
+
+func TestPeer_NewPeer(t *testing.T) {
+	t.Parallel()
+
+	tcpAddr, err := net.ResolveTCPAddr("tcp", "localhost:8080")
+	require.NoError(t, err)
+
+	netAddr, err := types.NewNetAddress(types.GenerateNodeKey().ID(), tcpAddr)
+	require.NoError(t, err)
+
+	var (
+		connInfo = &ConnInfo{
+			Outbound:   false,
+			Persistent: true,
+			Conn:       &mock.Conn{},
+			RemoteIP:   tcpAddr.IP,
+			SocketAddr: netAddr,
+		}
+
+		mConfig = &ConnConfig{
+			MConfig:      conn.MConfigFromP2P(config.DefaultP2PConfig()),
+			ReactorsByCh: make(map[byte]Reactor),
+			ChDescs:      make([]*conn.ChannelDescriptor, 0),
+			OnPeerError:  nil,
+		}
+	)
+
+	assert.NotPanics(t, func() {
+		_ = newPeer(connInfo, types.NodeInfo{}, mConfig)
+	})
 }

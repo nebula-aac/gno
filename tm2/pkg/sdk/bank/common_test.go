@@ -4,11 +4,12 @@ package bank
 
 import (
 	bft "github.com/gnolang/gno/tm2/pkg/bft/types"
-	dbm "github.com/gnolang/gno/tm2/pkg/db"
+	"github.com/gnolang/gno/tm2/pkg/db/memdb"
 	"github.com/gnolang/gno/tm2/pkg/log"
 
 	"github.com/gnolang/gno/tm2/pkg/sdk"
 	"github.com/gnolang/gno/tm2/pkg/sdk/auth"
+	"github.com/gnolang/gno/tm2/pkg/sdk/params"
 	"github.com/gnolang/gno/tm2/pkg/std"
 	"github.com/gnolang/gno/tm2/pkg/store"
 	"github.com/gnolang/gno/tm2/pkg/store/iavl"
@@ -21,17 +22,17 @@ type testEnv struct {
 }
 
 func setupTestEnv() testEnv {
-	db := dbm.NewMemDB()
+	db := memdb.NewMemDB()
 
 	authCapKey := store.NewStoreKey("authCapKey")
 
 	ms := store.NewCommitMultiStore(db)
 	ms.MountStoreWithDB(authCapKey, iavl.StoreConstructor, db)
 	ms.LoadLatestVersion()
-
-	ctx := sdk.NewContext(sdk.RunTxModeDeliver, ms, &bft.Header{ChainID: "test-chain-id"}, log.NewNopLogger())
+	paramk := params.NewParamsKeeper(authCapKey, "")
+	ctx := sdk.NewContext(sdk.RunTxModeDeliver, ms, &bft.Header{ChainID: "test-chain-id"}, log.NewNoopLogger())
 	acck := auth.NewAccountKeeper(
-		authCapKey, std.ProtoBaseAccount,
+		authCapKey, paramk, std.ProtoBaseAccount,
 	)
 
 	bank := NewBankKeeper(acck)

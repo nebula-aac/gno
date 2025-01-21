@@ -1,14 +1,15 @@
 package blockchain
 
 import (
+	"context"
+	"log/slog"
 	"os"
 	"sort"
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-
 	abci "github.com/gnolang/gno/tm2/pkg/bft/abci/types"
+	"github.com/gnolang/gno/tm2/pkg/bft/appconn"
 	cfg "github.com/gnolang/gno/tm2/pkg/bft/config"
 	"github.com/gnolang/gno/tm2/pkg/bft/mempool/mock"
 	"github.com/gnolang/gno/tm2/pkg/bft/proxy"
@@ -16,11 +17,14 @@ import (
 	"github.com/gnolang/gno/tm2/pkg/bft/store"
 	"github.com/gnolang/gno/tm2/pkg/bft/types"
 	tmtime "github.com/gnolang/gno/tm2/pkg/bft/types/time"
-	dbm "github.com/gnolang/gno/tm2/pkg/db"
+	"github.com/gnolang/gno/tm2/pkg/db/memdb"
 	"github.com/gnolang/gno/tm2/pkg/errors"
+	p2pTesting "github.com/gnolang/gno/tm2/pkg/internal/p2p"
 	"github.com/gnolang/gno/tm2/pkg/log"
 	"github.com/gnolang/gno/tm2/pkg/p2p"
+	p2pTypes "github.com/gnolang/gno/tm2/pkg/p2p/types"
 	"github.com/gnolang/gno/tm2/pkg/testutils"
+	"github.com/stretchr/testify/assert"
 )
 
 var config *cfg.Config
@@ -47,24 +51,24 @@ func randGenesisDoc(numValidators int, randPower bool, minPower int64) (*types.G
 
 type BlockchainReactorPair struct {
 	reactor *BlockchainReactor
-	app     proxy.AppConns
+	app     appconn.AppConns
 }
 
-func newBlockchainReactor(logger log.Logger, genDoc *types.GenesisDoc, privVals []types.PrivValidator, maxBlockHeight int64) BlockchainReactorPair {
+func newBlockchainReactor(logger *slog.Logger, genDoc *types.GenesisDoc, privVals []types.PrivValidator, maxBlockHeight int64) BlockchainReactorPair {
 	if len(privVals) != 1 {
 		panic("only support one validator")
 	}
 
 	app := &testApp{}
 	cc := proxy.NewLocalClientCreator(app)
-	proxyApp := proxy.NewAppConns(cc)
+	proxyApp := appconn.NewAppConns(cc)
 	err := proxyApp.Start()
 	if err != nil {
 		panic(errors.Wrap(err, "error start app"))
 	}
 
-	blockDB := dbm.NewMemDB()
-	stateDB := dbm.NewMemDB()
+	blockDB := memdb.NewMemDB()
+	stateDB := memdb.NewMemDB()
 	blockStore := store.NewBlockStore(blockDB)
 
 	state, err := sm.LoadStateFromDBOrGenesisDoc(stateDB, genDoc)
@@ -76,8 +80,8 @@ func newBlockchainReactor(logger log.Logger, genDoc *types.GenesisDoc, privVals 
 	// NOTE we have to create and commit the blocks first because
 	// pool.height is determined from the store.
 	fastSync := true
-	db := dbm.NewMemDB()
-	blockExec := sm.NewBlockExecutor(db, log.TestingLogger(), proxyApp.Consensus(), mock.Mempool{})
+	db := memdb.NewMemDB()
+	blockExec := sm.NewBlockExecutor(db, logger, proxyApp.Consensus(), mock.Mempool{})
 	sm.SaveState(db, state)
 
 	// let's add some blocks in
@@ -108,28 +112,50 @@ func newBlockchainReactor(logger log.Logger, genDoc *types.GenesisDoc, privVals 
 		blockStore.SaveBlock(thisBlock, thisParts, lastCommit)
 	}
 
-	bcReactor := NewBlockchainReactor(state.Copy(), blockExec, blockStore, fastSync)
+	bcReactor := NewBlockchainReactor(state.Copy(), blockExec, blockStore, fastSync, nil)
 	bcReactor.SetLogger(logger.With("module", "blockchain"))
 
 	return BlockchainReactorPair{bcReactor, proxyApp}
 }
 
 func TestNoBlockResponse(t *testing.T) {
-	config = cfg.ResetTestRoot("blockchain_reactor_test")
+	t.Parallel()
+
+	config, _ = cfg.ResetTestRoot("blockchain_reactor_test")
 	defer os.RemoveAll(config.RootDir)
 	genDoc, privVals := randGenesisDoc(1, false, 30)
 
 	maxBlockHeight := int64(65)
 
-	reactorPairs := make([]BlockchainReactorPair, 2)
+	var (
+		reactorPairs = make([]BlockchainReactorPair, 2)
+		options      = make(map[int][]p2p.SwitchOption)
+	)
 
-	reactorPairs[0] = newBlockchainReactor(log.TestingLogger(), genDoc, privVals, maxBlockHeight)
-	reactorPairs[1] = newBlockchainReactor(log.TestingLogger(), genDoc, privVals, 0)
+	for i := range reactorPairs {
+		height := int64(0)
+		if i == 0 {
+			height = maxBlockHeight
+		}
 
-	p2p.MakeConnectedSwitches(config.P2P, 2, func(i int, s *p2p.Switch) *p2p.Switch {
-		s.AddReactor("BLOCKCHAIN", reactorPairs[i].reactor)
-		return s
-	}, p2p.Connect2Switches)
+		reactorPairs[i] = newBlockchainReactor(log.NewTestingLogger(t), genDoc, privVals, height)
+
+		options[i] = []p2p.SwitchOption{
+			p2p.WithReactor("BLOCKCHAIN", reactorPairs[i].reactor),
+		}
+	}
+
+	ctx, cancelFn := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelFn()
+
+	testingCfg := p2pTesting.TestingConfig{
+		Count:         2,
+		P2PCfg:        config.P2P,
+		SwitchOptions: options,
+		Channels:      []byte{BlockchainChannel},
+	}
+
+	p2pTesting.MakeConnectedPeers(t, ctx, testingCfg)
 
 	defer func() {
 		for _, r := range reactorPairs {
@@ -174,31 +200,51 @@ func TestNoBlockResponse(t *testing.T) {
 // Alternatively we could actually dial a TCP conn but
 // that seems extreme.
 func TestFlappyBadBlockStopsPeer(t *testing.T) {
+	t.Parallel()
+
 	testutils.FilterStability(t, testutils.Flappy)
 
-	config = cfg.ResetTestRoot("blockchain_reactor_test")
+	config, _ = cfg.ResetTestRoot("blockchain_reactor_test")
 	defer os.RemoveAll(config.RootDir)
 	genDoc, privVals := randGenesisDoc(1, false, 30)
 
 	maxBlockHeight := int64(148)
 
-	otherChain := newBlockchainReactor(log.TestingLogger(), genDoc, privVals, maxBlockHeight)
+	otherChain := newBlockchainReactor(log.NewNoopLogger(), genDoc, privVals, maxBlockHeight)
 	defer func() {
 		otherChain.reactor.Stop()
 		otherChain.app.Stop()
 	}()
 
-	reactorPairs := make([]BlockchainReactorPair, 4)
+	var (
+		reactorPairs = make([]BlockchainReactorPair, 4)
+		options      = make(map[int][]p2p.SwitchOption)
+	)
 
-	reactorPairs[0] = newBlockchainReactor(log.TestingLogger(), genDoc, privVals, maxBlockHeight)
-	reactorPairs[1] = newBlockchainReactor(log.TestingLogger(), genDoc, privVals, 0)
-	reactorPairs[2] = newBlockchainReactor(log.TestingLogger(), genDoc, privVals, 0)
-	reactorPairs[3] = newBlockchainReactor(log.TestingLogger(), genDoc, privVals, 0)
+	for i := range reactorPairs {
+		height := int64(0)
+		if i == 0 {
+			height = maxBlockHeight
+		}
 
-	switches := p2p.MakeConnectedSwitches(config.P2P, 4, func(i int, s *p2p.Switch) *p2p.Switch {
-		s.AddReactor("BLOCKCHAIN", reactorPairs[i].reactor)
-		return s
-	}, p2p.Connect2Switches)
+		reactorPairs[i] = newBlockchainReactor(log.NewNoopLogger(), genDoc, privVals, height)
+
+		options[i] = []p2p.SwitchOption{
+			p2p.WithReactor("BLOCKCHAIN", reactorPairs[i].reactor),
+		}
+	}
+
+	ctx, cancelFn := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelFn()
+
+	testingCfg := p2pTesting.TestingConfig{
+		Count:         4,
+		P2PCfg:        config.P2P,
+		SwitchOptions: options,
+		Channels:      []byte{BlockchainChannel},
+	}
+
+	switches, transports := p2pTesting.MakeConnectedPeers(t, ctx, testingCfg)
 
 	defer func() {
 		for _, r := range reactorPairs {
@@ -216,35 +262,54 @@ func TestFlappyBadBlockStopsPeer(t *testing.T) {
 	}
 
 	// at this time, reactors[0-3] is the newest
-	assert.Equal(t, 3, reactorPairs[1].reactor.Switch.Peers().Size())
+	assert.Equal(t, 3, len(reactorPairs[1].reactor.Switch.Peers().List()))
 
 	// mark reactorPairs[3] is an invalid peer
 	reactorPairs[3].reactor.store = otherChain.reactor.store
 
-	lastReactorPair := newBlockchainReactor(log.TestingLogger(), genDoc, privVals, 0)
+	lastReactorPair := newBlockchainReactor(log.NewNoopLogger(), genDoc, privVals, 0)
 	reactorPairs = append(reactorPairs, lastReactorPair)
 
-	switches = append(switches, p2p.MakeConnectedSwitches(config.P2P, 1, func(i int, s *p2p.Switch) *p2p.Switch {
-		s.AddReactor("BLOCKCHAIN", reactorPairs[len(reactorPairs)-1].reactor)
-		return s
-	}, p2p.Connect2Switches)...)
+	persistentPeers := make([]*p2pTypes.NetAddress, 0, len(transports))
 
-	for i := 0; i < len(reactorPairs)-1; i++ {
-		p2p.Connect2Switches(switches, i, len(reactorPairs)-1)
+	for _, tr := range transports {
+		addr := tr.NetAddress()
+		persistentPeers = append(persistentPeers, &addr)
 	}
 
+	for i, opt := range options {
+		opt = append(opt, p2p.WithPersistentPeers(persistentPeers))
+
+		options[i] = opt
+	}
+
+	ctx, cancelFn = context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelFn()
+
+	testingCfg = p2pTesting.TestingConfig{
+		Count:         1,
+		P2PCfg:        config.P2P,
+		SwitchOptions: options,
+		Channels:      []byte{BlockchainChannel},
+	}
+
+	sw, _ := p2pTesting.MakeConnectedPeers(t, ctx, testingCfg)
+	switches = append(switches, sw...)
+
 	for {
-		if lastReactorPair.reactor.pool.IsCaughtUp() || lastReactorPair.reactor.Switch.Peers().Size() == 0 {
+		if lastReactorPair.reactor.pool.IsCaughtUp() || len(lastReactorPair.reactor.Switch.Peers().List()) == 0 {
 			break
 		}
 
 		time.Sleep(1 * time.Second)
 	}
 
-	assert.True(t, lastReactorPair.reactor.Switch.Peers().Size() < len(reactorPairs)-1)
+	assert.True(t, len(lastReactorPair.reactor.Switch.Peers().List()) < len(reactorPairs)-1)
 }
 
 func TestBcBlockRequestMessageValidateBasic(t *testing.T) {
+	t.Parallel()
+
 	testCases := []struct {
 		testName      string
 		requestHeight int64
@@ -258,6 +323,8 @@ func TestBcBlockRequestMessageValidateBasic(t *testing.T) {
 	for _, tc := range testCases {
 		tc := tc
 		t.Run(tc.testName, func(t *testing.T) {
+			t.Parallel()
+
 			request := bcBlockRequestMessage{Height: tc.requestHeight}
 			assert.Equal(t, tc.expectErr, request.ValidateBasic() != nil, "Validate Basic had an unexpected result")
 		})
@@ -265,6 +332,8 @@ func TestBcBlockRequestMessageValidateBasic(t *testing.T) {
 }
 
 func TestBcNoBlockResponseMessageValidateBasic(t *testing.T) {
+	t.Parallel()
+
 	testCases := []struct {
 		testName          string
 		nonResponseHeight int64
@@ -278,6 +347,8 @@ func TestBcNoBlockResponseMessageValidateBasic(t *testing.T) {
 	for _, tc := range testCases {
 		tc := tc
 		t.Run(tc.testName, func(t *testing.T) {
+			t.Parallel()
+
 			nonResponse := bcNoBlockResponseMessage{Height: tc.nonResponseHeight}
 			assert.Equal(t, tc.expectErr, nonResponse.ValidateBasic() != nil, "Validate Basic had an unexpected result")
 		})
@@ -285,6 +356,8 @@ func TestBcNoBlockResponseMessageValidateBasic(t *testing.T) {
 }
 
 func TestBcStatusRequestMessageValidateBasic(t *testing.T) {
+	t.Parallel()
+
 	testCases := []struct {
 		testName      string
 		requestHeight int64
@@ -298,6 +371,8 @@ func TestBcStatusRequestMessageValidateBasic(t *testing.T) {
 	for _, tc := range testCases {
 		tc := tc
 		t.Run(tc.testName, func(t *testing.T) {
+			t.Parallel()
+
 			request := bcStatusRequestMessage{Height: tc.requestHeight}
 			assert.Equal(t, tc.expectErr, request.ValidateBasic() != nil, "Validate Basic had an unexpected result")
 		})
@@ -305,6 +380,8 @@ func TestBcStatusRequestMessageValidateBasic(t *testing.T) {
 }
 
 func TestBcStatusResponseMessageValidateBasic(t *testing.T) {
+	t.Parallel()
+
 	testCases := []struct {
 		testName       string
 		responseHeight int64
@@ -318,13 +395,15 @@ func TestBcStatusResponseMessageValidateBasic(t *testing.T) {
 	for _, tc := range testCases {
 		tc := tc
 		t.Run(tc.testName, func(t *testing.T) {
+			t.Parallel()
+
 			response := bcStatusResponseMessage{Height: tc.responseHeight}
 			assert.Equal(t, tc.expectErr, response.ValidateBasic() != nil, "Validate Basic had an unexpected result")
 		})
 	}
 }
 
-//----------------------------------------------
+// ----------------------------------------------
 // utility funcs
 
 func makeTxs(height int64) (txs []types.Tx) {

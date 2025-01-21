@@ -5,12 +5,12 @@ import (
 	"testing"
 	"time"
 
+	p2pTypes "github.com/gnolang/gno/tm2/pkg/p2p/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/gnolang/gno/tm2/pkg/bft/types"
 	"github.com/gnolang/gno/tm2/pkg/log"
-	"github.com/gnolang/gno/tm2/pkg/p2p"
 	"github.com/gnolang/gno/tm2/pkg/random"
 )
 
@@ -19,7 +19,7 @@ func init() {
 }
 
 type testPeer struct {
-	id        p2p.ID
+	id        p2pTypes.ID
 	height    int64
 	inputChan chan inputData // make sure each peer's data is sequential
 }
@@ -47,7 +47,7 @@ func (p testPeer) simulateInput(input inputData) {
 	// input.t.Logf("Added block from peer %v (height: %v)", input.request.PeerID, input.request.Height)
 }
 
-type testPeers map[p2p.ID]testPeer
+type testPeers map[p2pTypes.ID]testPeer
 
 func (ps testPeers) start() {
 	for _, v := range ps {
@@ -64,7 +64,7 @@ func (ps testPeers) stop() {
 func makePeers(numPeers int, minHeight, maxHeight int64) testPeers {
 	peers := make(testPeers, numPeers)
 	for i := 0; i < numPeers; i++ {
-		peerID := p2p.ID(random.RandStr(12))
+		peerID := p2pTypes.ID(random.RandStr(12))
 		height := minHeight + random.RandInt63n(maxHeight-minHeight)
 		peers[peerID] = testPeer{peerID, height, make(chan inputData, 10)}
 	}
@@ -72,12 +72,14 @@ func makePeers(numPeers int, minHeight, maxHeight int64) testPeers {
 }
 
 func TestBlockPoolBasic(t *testing.T) {
+	t.Parallel()
+
 	start := int64(42)
 	peers := makePeers(10, start+1, 1000)
 	errorsCh := make(chan peerError, 1000)
 	requestsCh := make(chan BlockRequest, 1000)
 	pool := NewBlockPool(start, requestsCh, errorsCh)
-	pool.SetLogger(log.TestingLogger())
+	pool.SetLogger(log.NewNoopLogger())
 
 	err := pool.Start()
 	if err != nil {
@@ -128,12 +130,14 @@ func TestBlockPoolBasic(t *testing.T) {
 }
 
 func TestBlockPoolTimeout(t *testing.T) {
+	t.Parallel()
+
 	start := int64(42)
 	peers := makePeers(10, start+1, 1000)
 	errorsCh := make(chan peerError, 1000)
 	requestsCh := make(chan BlockRequest, 1000)
 	pool := NewBlockPool(start, requestsCh, errorsCh)
-	pool.SetLogger(log.TestingLogger())
+	pool.SetLogger(log.NewTestingLogger(t))
 	err := pool.Start()
 	if err != nil {
 		t.Error(err)
@@ -168,7 +172,7 @@ func TestBlockPoolTimeout(t *testing.T) {
 
 	// Pull from channels
 	counter := 0
-	timedOut := map[p2p.ID]struct{}{}
+	timedOut := map[p2pTypes.ID]struct{}{}
 	for {
 		select {
 		case err := <-errorsCh:
@@ -187,9 +191,11 @@ func TestBlockPoolTimeout(t *testing.T) {
 }
 
 func TestBlockPoolRemovePeer(t *testing.T) {
+	t.Parallel()
+
 	peers := make(testPeers, 10)
 	for i := 0; i < 10; i++ {
-		peerID := p2p.ID(fmt.Sprintf("%d", i+1))
+		peerID := p2pTypes.ID(fmt.Sprintf("%d", i+1))
 		height := int64(i + 1)
 		peers[peerID] = testPeer{peerID, height, make(chan inputData)}
 	}
@@ -197,7 +203,7 @@ func TestBlockPoolRemovePeer(t *testing.T) {
 	errorsCh := make(chan peerError)
 
 	pool := NewBlockPool(1, requestsCh, errorsCh)
-	pool.SetLogger(log.TestingLogger())
+	pool.SetLogger(log.NewTestingLogger(t))
 	err := pool.Start()
 	require.NoError(t, err)
 	defer pool.Stop()
@@ -209,10 +215,10 @@ func TestBlockPoolRemovePeer(t *testing.T) {
 	assert.EqualValues(t, 10, pool.MaxPeerHeight())
 
 	// remove not-existing peer
-	assert.NotPanics(t, func() { pool.RemovePeer(p2p.ID("Superman")) })
+	assert.NotPanics(t, func() { pool.RemovePeer(p2pTypes.ID("Superman")) })
 
 	// remove peer with biggest height
-	pool.RemovePeer(p2p.ID("10"))
+	pool.RemovePeer(p2pTypes.ID("10"))
 	assert.EqualValues(t, 9, pool.MaxPeerHeight())
 
 	// remove all peers

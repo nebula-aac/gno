@@ -7,7 +7,7 @@ import (
 )
 
 var b = &blog.Blog{
-	Title:  "Gnoland's Blog",
+	Title:  "gno.land's blog",
 	Prefix: "/r/gnoland/blog:",
 }
 
@@ -22,4 +22,15 @@ func AddComment(postSlug, comment string) {
 
 func Render(path string) string {
 	return b.Render(path)
+}
+
+func RenderLastPostsWidget(limit int) string {
+	return b.RenderLastPostsWidget(limit)
+}
+
+func PostExists(slug string) bool {
+	if b.GetPost(slug) == nil {
+		return false
+	}
+	return true
 }

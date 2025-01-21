@@ -4,11 +4,13 @@ import (
 	"math"
 	"testing"
 
-	"github.com/gnolang/overflow"
+	"github.com/gnolang/gno/tm2/pkg/overflow"
 	"github.com/stretchr/testify/require"
 )
 
 func TestGasMeter(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		limit Gas
 		usage []Gas
@@ -46,6 +48,8 @@ func TestGasMeter(t *testing.T) {
 }
 
 func TestAddUint64Overflow(t *testing.T) {
+	t.Parallel()
+
 	testCases := []struct {
 		a, b     int64
 		result   int64

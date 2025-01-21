@@ -1,12 +1,12 @@
 package consensus
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/stretchr/testify/assert"
 
 	"github.com/gnolang/gno/tm2/pkg/amino"
 	"github.com/gnolang/gno/tm2/pkg/bft/abci/example/kvstore"
@@ -17,26 +17,38 @@ import (
 	"github.com/gnolang/gno/tm2/pkg/bitarray"
 	"github.com/gnolang/gno/tm2/pkg/crypto/tmhash"
 	"github.com/gnolang/gno/tm2/pkg/events"
+	p2pTesting "github.com/gnolang/gno/tm2/pkg/internal/p2p"
 	"github.com/gnolang/gno/tm2/pkg/log"
 	osm "github.com/gnolang/gno/tm2/pkg/os"
 	"github.com/gnolang/gno/tm2/pkg/p2p"
-	"github.com/gnolang/gno/tm2/pkg/p2p/mock"
 	"github.com/gnolang/gno/tm2/pkg/testutils"
+	"github.com/stretchr/testify/assert"
 )
 
 // ----------------------------------------------
 // in-process testnets
 
-func startConsensusNet(css []*ConsensusState, n int) ([]*ConsensusReactor, []<-chan events.Event, []events.EventSwitch, []*p2p.Switch) {
+func startConsensusNet(
+	t *testing.T,
+	css []*ConsensusState,
+	n int,
+) ([]*ConsensusReactor, []<-chan events.Event, []events.EventSwitch, []*p2p.MultiplexSwitch) {
+	t.Helper()
+
 	reactors := make([]*ConsensusReactor, n)
 	blocksSubs := make([]<-chan events.Event, 0)
 	eventSwitches := make([]events.EventSwitch, n)
-	p2pSwitches := ([]*p2p.Switch)(nil)
+	p2pSwitches := ([]*p2p.MultiplexSwitch)(nil)
+	options := make(map[int][]p2p.SwitchOption)
 	for i := 0; i < n; i++ {
 		/*logger, err := tmflags.ParseLogLevel("consensus:info,*:error", logger, "info")
 		if err != nil {	t.Fatal(err)}*/
 		reactors[i] = NewConsensusReactor(css[i], true) // so we dont start the consensus states
 		reactors[i].SetLogger(css[i].Logger)
+
+		options[i] = []p2p.SwitchOption{
+			p2p.WithReactor("CONSENSUS", reactors[i]),
+		}
 
 		// evsw is already started with the cs
 		eventSwitches[i] = css[i].evsw
@@ -50,11 +62,22 @@ func startConsensusNet(css []*ConsensusState, n int) ([]*ConsensusReactor, []<-c
 		}
 	}
 	// make connected switches and start all reactors
-	p2pSwitches = p2p.MakeConnectedSwitches(config.P2P, n, func(i int, s *p2p.Switch) *p2p.Switch {
-		s.AddReactor("CONSENSUS", reactors[i])
-		s.SetLogger(reactors[i].conS.Logger.With("module", "p2p"))
-		return s
-	}, p2p.Connect2Switches)
+	ctx, cancelFn := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelFn()
+
+	testingCfg := p2pTesting.TestingConfig{
+		P2PCfg:        config.P2P,
+		Count:         n,
+		SwitchOptions: options,
+		Channels: []byte{
+			StateChannel,
+			DataChannel,
+			VoteChannel,
+			VoteSetBitsChannel,
+		},
+	}
+
+	p2pSwitches, _ = p2pTesting.MakeConnectedPeers(t, ctx, testingCfg)
 
 	// now that everyone is connected,  start the state machines
 	// If we started the state machines before everyone was connected,
@@ -67,11 +90,15 @@ func startConsensusNet(css []*ConsensusState, n int) ([]*ConsensusReactor, []<-c
 	return reactors, blocksSubs, eventSwitches, p2pSwitches
 }
 
-func stopConsensusNet(logger log.Logger, reactors []*ConsensusReactor, eventSwitches []events.EventSwitch, p2pSwitches []*p2p.Switch) {
+func stopConsensusNet(
+	logger *slog.Logger,
+	reactors []*ConsensusReactor,
+	eventSwitches []events.EventSwitch,
+	p2pSwitches []*p2p.MultiplexSwitch,
+) {
 	logger.Info("stopConsensusNet", "n", len(reactors))
-	for i, r := range reactors {
+	for i := range reactors {
 		logger.Info("stopConsensusNet: Stopping ConsensusReactor", "i", i)
-		r.Switch.Stop()
 	}
 	for i, b := range eventSwitches {
 		logger.Info("stopConsensusNet: Stopping evsw", "i", i)
@@ -86,11 +113,13 @@ func stopConsensusNet(logger log.Logger, reactors []*ConsensusReactor, eventSwit
 
 // Ensure a testnet makes blocks
 func TestReactorBasic(t *testing.T) {
+	t.Parallel()
+
 	N := 4
 	css, cleanup := randConsensusNet(N, "consensus_reactor_test", newMockTickerFunc(true), newCounter)
 	defer cleanup()
-	reactors, blocksSubs, eventSwitches, p2pSwitches := startConsensusNet(css, N)
-	defer stopConsensusNet(log.TestingLogger(), reactors, eventSwitches, p2pSwitches)
+	reactors, blocksSubs, eventSwitches, p2pSwitches := startConsensusNet(t, css, N)
+	defer stopConsensusNet(log.NewTestingLogger(t), reactors, eventSwitches, p2pSwitches)
 	// wait till everyone makes the first new block
 	timeoutWaitGroup(t, N, func(j int) {
 		<-blocksSubs[j]
@@ -101,14 +130,16 @@ func TestReactorBasic(t *testing.T) {
 
 // Ensure a testnet makes blocks when there are txs
 func TestReactorCreatesBlockWhenEmptyBlocksFalse(t *testing.T) {
+	t.Parallel()
+
 	N := 4
 	css, cleanup := randConsensusNet(N, "consensus_reactor_test", newMockTickerFunc(true), newCounter,
 		func(c *cfg.Config) {
 			c.Consensus.CreateEmptyBlocks = false
 		})
 	defer cleanup()
-	reactors, blocksSubs, eventSwitches, p2pSwitches := startConsensusNet(css, N)
-	defer stopConsensusNet(log.TestingLogger(), reactors, eventSwitches, p2pSwitches)
+	reactors, blocksSubs, eventSwitches, p2pSwitches := startConsensusNet(t, css, N)
+	defer stopConsensusNet(log.NewTestingLogger(t), reactors, eventSwitches, p2pSwitches)
 
 	// send a tx
 	if err := assertMempool(css[3].txNotifier).CheckTx([]byte{1, 2, 3}, nil); err != nil {
@@ -122,15 +153,17 @@ func TestReactorCreatesBlockWhenEmptyBlocksFalse(t *testing.T) {
 }
 
 func TestReactorReceiveDoesNotPanicIfAddPeerHasntBeenCalledYet(t *testing.T) {
+	t.Parallel()
+
 	N := 1
 	css, cleanup := randConsensusNet(N, "consensus_reactor_test", newMockTickerFunc(true), newCounter)
 	defer cleanup()
-	reactors, _, eventSwitches, p2pSwitches := startConsensusNet(css, N)
-	defer stopConsensusNet(log.TestingLogger(), reactors, eventSwitches, p2pSwitches)
+	reactors, _, eventSwitches, p2pSwitches := startConsensusNet(t, css, N)
+	defer stopConsensusNet(log.NewTestingLogger(t), reactors, eventSwitches, p2pSwitches)
 
 	var (
 		reactor = reactors[0]
-		peer    = mock.NewPeer(nil)
+		peer    = p2pTesting.NewPeer(t)
 		msg     = amino.MustMarshalAny(&HasVoteMessage{Height: 1, Round: 1, Index: 1, Type: types.PrevoteType})
 	)
 
@@ -144,15 +177,17 @@ func TestReactorReceiveDoesNotPanicIfAddPeerHasntBeenCalledYet(t *testing.T) {
 }
 
 func TestReactorReceivePanicsIfInitPeerHasntBeenCalledYet(t *testing.T) {
+	t.Parallel()
+
 	N := 1
 	css, cleanup := randConsensusNet(N, "consensus_reactor_test", newMockTickerFunc(true), newCounter)
 	defer cleanup()
-	reactors, _, eventSwitches, p2pSwitches := startConsensusNet(css, N)
-	defer stopConsensusNet(log.TestingLogger(), reactors, eventSwitches, p2pSwitches)
+	reactors, _, eventSwitches, p2pSwitches := startConsensusNet(t, css, N)
+	defer stopConsensusNet(log.NewTestingLogger(t), reactors, eventSwitches, p2pSwitches)
 
 	var (
 		reactor = reactors[0]
-		peer    = mock.NewPeer(nil)
+		peer    = p2pTesting.NewPeer(t)
 		msg     = amino.MustMarshalAny(&HasVoteMessage{Height: 1, Round: 1, Index: 1, Type: types.PrevoteType})
 	)
 
@@ -166,13 +201,15 @@ func TestReactorReceivePanicsIfInitPeerHasntBeenCalledYet(t *testing.T) {
 
 // Test we record stats about votes and block parts from other peers.
 func TestFlappyReactorRecordsVotesAndBlockParts(t *testing.T) {
+	t.Parallel()
+
 	testutils.FilterStability(t, testutils.Flappy)
 
 	N := 4
 	css, cleanup := randConsensusNet(N, "consensus_reactor_test", newMockTickerFunc(true), newCounter)
 	defer cleanup()
-	reactors, blocksSubs, eventSwitches, p2pSwitches := startConsensusNet(css, N)
-	defer stopConsensusNet(log.TestingLogger(), reactors, eventSwitches, p2pSwitches)
+	reactors, blocksSubs, eventSwitches, p2pSwitches := startConsensusNet(t, css, N)
+	defer stopConsensusNet(log.NewTestingLogger(t), reactors, eventSwitches, p2pSwitches)
 
 	// wait till everyone makes the first new block
 	timeoutWaitGroup(t, N, func(j int) {
@@ -192,12 +229,14 @@ func TestFlappyReactorRecordsVotesAndBlockParts(t *testing.T) {
 // ensure we can make blocks despite cycling a validator set
 
 func TestReactorVotingPowerChange(t *testing.T) {
+	t.Parallel()
+
 	nVals := 4
-	logger := log.TestingLogger()
+	logger := log.NewTestingLogger(t)
 	css, cleanup := randConsensusNet(nVals, "consensus_voting_power_changes_test", newMockTickerFunc(true), newPersistentKVStore)
 	defer cleanup()
 
-	reactors, blocksSubs, eventSwitches, p2pSwitches := startConsensusNet(css, nVals)
+	reactors, blocksSubs, eventSwitches, p2pSwitches := startConsensusNet(t, css, nVals)
 	defer stopConsensusNet(logger, reactors, eventSwitches, p2pSwitches)
 
 	// map of active validators
@@ -254,14 +293,16 @@ func TestReactorVotingPowerChange(t *testing.T) {
 }
 
 func TestReactorValidatorSetChanges(t *testing.T) {
+	t.Parallel()
+
 	nPeers := 7
 	nVals := 4
 	css, _, _, cleanup := randConsensusNetWithPeers(nVals, nPeers, "consensus_val_set_changes_test", newMockTickerFunc(true), newPersistentKVStoreWithPath)
 	defer cleanup()
 
-	logger := log.TestingLogger()
+	logger := log.NewTestingLogger(t)
 
-	reactors, blocksSubs, eventSwitches, p2pSwitches := startConsensusNet(css, nPeers)
+	reactors, blocksSubs, eventSwitches, p2pSwitches := startConsensusNet(t, css, nPeers)
 	defer stopConsensusNet(logger, reactors, eventSwitches, p2pSwitches)
 
 	// map of active validators
@@ -350,6 +391,8 @@ func TestReactorValidatorSetChanges(t *testing.T) {
 
 // Check we can make blocks with skip_timeout_commit=false
 func TestReactorWithTimeoutCommit(t *testing.T) {
+	t.Parallel()
+
 	N := 4
 	css, cleanup := randConsensusNet(N, "consensus_reactor_with_timeout_commit_test", newMockTickerFunc(false), newCounter)
 	defer cleanup()
@@ -358,8 +401,8 @@ func TestReactorWithTimeoutCommit(t *testing.T) {
 		css[i].config.SkipTimeoutCommit = false
 	}
 
-	reactors, blocksSubs, eventSwitches, p2pSwitches := startConsensusNet(css, N-1)
-	defer stopConsensusNet(log.TestingLogger(), reactors, eventSwitches, p2pSwitches)
+	reactors, blocksSubs, eventSwitches, p2pSwitches := startConsensusNet(t, css, N-1)
+	defer stopConsensusNet(log.NewTestingLogger(t), reactors, eventSwitches, p2pSwitches)
 
 	// wait till everyone makes the first new block
 	timeoutWaitGroup(t, N-1, func(j int) {
@@ -510,6 +553,8 @@ func timeoutWaitGroup(t *testing.T, n int, f func(int), css []*ConsensusState) {
 // Ensure basic validation of structs is functioning
 
 func TestNewRoundStepMessageValidateBasic(t *testing.T) {
+	t.Parallel()
+
 	testCases := []struct {
 		testName               string
 		messageHeight          int64
@@ -529,6 +574,8 @@ func TestNewRoundStepMessageValidateBasic(t *testing.T) {
 	for _, tc := range testCases {
 		tc := tc
 		t.Run(tc.testName, func(t *testing.T) {
+			t.Parallel()
+
 			message := NewRoundStepMessage{
 				Height:          tc.messageHeight,
 				Round:           tc.messageRound,
@@ -542,6 +589,8 @@ func TestNewRoundStepMessageValidateBasic(t *testing.T) {
 }
 
 func TestNewValidBlockMessageValidateBasic(t *testing.T) {
+	t.Parallel()
+
 	testCases := []struct {
 		malleateFn func(*NewValidBlockMessage)
 		expErr     string
@@ -569,6 +618,8 @@ func TestNewValidBlockMessageValidateBasic(t *testing.T) {
 	for i, tc := range testCases {
 		tc := tc
 		t.Run(fmt.Sprintf("#%d", i), func(t *testing.T) {
+			t.Parallel()
+
 			msg := &NewValidBlockMessage{
 				Height: 1,
 				Round:  0,
@@ -588,6 +639,8 @@ func TestNewValidBlockMessageValidateBasic(t *testing.T) {
 }
 
 func TestProposalPOLMessageValidateBasic(t *testing.T) {
+	t.Parallel()
+
 	testCases := []struct {
 		malleateFn func(*ProposalPOLMessage)
 		expErr     string
@@ -605,6 +658,8 @@ func TestProposalPOLMessageValidateBasic(t *testing.T) {
 	for i, tc := range testCases {
 		tc := tc
 		t.Run(fmt.Sprintf("#%d", i), func(t *testing.T) {
+			t.Parallel()
+
 			msg := &ProposalPOLMessage{
 				Height:           1,
 				ProposalPOLRound: 1,
@@ -621,6 +676,8 @@ func TestProposalPOLMessageValidateBasic(t *testing.T) {
 }
 
 func TestBlockPartMessageValidateBasic(t *testing.T) {
+	t.Parallel()
+
 	testPart := new(types.Part)
 	testPart.Proof.LeafHash = tmhash.Sum([]byte("leaf"))
 	testCases := []struct {
@@ -638,6 +695,8 @@ func TestBlockPartMessageValidateBasic(t *testing.T) {
 	for _, tc := range testCases {
 		tc := tc
 		t.Run(tc.testName, func(t *testing.T) {
+			t.Parallel()
+
 			message := BlockPartMessage{
 				Height: tc.messageHeight,
 				Round:  tc.messageRound,
@@ -655,6 +714,8 @@ func TestBlockPartMessageValidateBasic(t *testing.T) {
 }
 
 func TestHasVoteMessageValidateBasic(t *testing.T) {
+	t.Parallel()
+
 	const (
 		validSignedMsgType   types.SignedMsgType = 0x01
 		invalidSignedMsgType types.SignedMsgType = 0x03
@@ -678,6 +739,8 @@ func TestHasVoteMessageValidateBasic(t *testing.T) {
 	for _, tc := range testCases {
 		tc := tc
 		t.Run(tc.testName, func(t *testing.T) {
+			t.Parallel()
+
 			message := HasVoteMessage{
 				Height: tc.messageHeight,
 				Round:  tc.messageRound,
@@ -691,6 +754,8 @@ func TestHasVoteMessageValidateBasic(t *testing.T) {
 }
 
 func TestVoteSetMaj23MessageValidateBasic(t *testing.T) {
+	t.Parallel()
+
 	const (
 		validSignedMsgType   types.SignedMsgType = 0x01
 		invalidSignedMsgType types.SignedMsgType = 0x03
@@ -723,6 +788,8 @@ func TestVoteSetMaj23MessageValidateBasic(t *testing.T) {
 	for _, tc := range testCases {
 		tc := tc
 		t.Run(tc.testName, func(t *testing.T) {
+			t.Parallel()
+
 			message := VoteSetMaj23Message{
 				Height:  tc.messageHeight,
 				Round:   tc.messageRound,
@@ -736,6 +803,8 @@ func TestVoteSetMaj23MessageValidateBasic(t *testing.T) {
 }
 
 func TestVoteSetBitsMessageValidateBasic(t *testing.T) {
+	t.Parallel()
+
 	testCases := []struct { //nolint: maligned
 		malleateFn func(*VoteSetBitsMessage)
 		expErr     string
@@ -762,6 +831,8 @@ func TestVoteSetBitsMessageValidateBasic(t *testing.T) {
 	for i, tc := range testCases {
 		tc := tc
 		t.Run(fmt.Sprintf("#%d", i), func(t *testing.T) {
+			t.Parallel()
+
 			msg := &VoteSetBitsMessage{
 				Height:  1,
 				Round:   0,

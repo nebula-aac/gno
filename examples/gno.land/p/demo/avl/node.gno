@@ -3,15 +3,17 @@ package avl
 //----------------------------------------
 // Node
 
+// Node represents a node in an AVL tree.
 type Node struct {
-	key       string
-	value     interface{}
-	height    int8
-	size      int
-	leftNode  *Node
-	rightNode *Node
+	key       string      // key is the unique identifier for the node.
+	value     interface{} // value is the data stored in the node.
+	height    int8        // height is the height of the node in the tree.
+	size      int         // size is the number of nodes in the subtree rooted at this node.
+	leftNode  *Node       // leftNode is the left child of the node.
+	rightNode *Node       // rightNode is the right child of the node.
 }
 
+// NewNode creates a new node with the given key and value.
 func NewNode(key string, value interface{}) *Node {
 	return &Node{
 		key:    key,
@@ -21,6 +23,7 @@ func NewNode(key string, value interface{}) *Node {
 	}
 }
 
+// Size returns the size of the subtree rooted at the node.
 func (node *Node) Size() int {
 	if node == nil {
 		return 0
@@ -28,14 +31,17 @@ func (node *Node) Size() int {
 	return node.size
 }
 
+// IsLeaf checks if the node is a leaf node (has no children).
 func (node *Node) IsLeaf() bool {
 	return node.height == 0
 }
 
+// Key returns the key of the node.
 func (node *Node) Key() string {
 	return node.key
 }
 
+// Value returns the value of the node.
 func (node *Node) Value() interface{} {
 	return node.value
 }
@@ -53,6 +59,7 @@ func (node *Node) _copy() *Node {
 	}
 }
 
+// Has checks if a node with the given key exists in the subtree rooted at the node.
 func (node *Node) Has(key string) (has bool) {
 	if node == nil {
 		return false
@@ -71,10 +78,13 @@ func (node *Node) Has(key string) (has bool) {
 	}
 }
 
+// Get searches for a node with the given key in the subtree rooted at the node
+// and returns its index, value, and whether it exists.
 func (node *Node) Get(key string) (index int, value interface{}, exists bool) {
 	if node == nil {
 		return 0, nil, false
 	}
+
 	if node.height == 0 {
 		if node.key == key {
 			return 0, node.value, true
@@ -95,13 +105,14 @@ func (node *Node) Get(key string) (index int, value interface{}, exists bool) {
 	}
 }
 
+// GetByIndex retrieves the key-value pair of the node at the given index
+// in the subtree rooted at the node.
 func (node *Node) GetByIndex(index int) (key string, value interface{}) {
 	if node.height == 0 {
 		if index == 0 {
 			return node.key, node.value
 		} else {
 			panic("GetByIndex asked for invalid index")
-			return "", nil
 		}
 	} else {
 		// TODO: could improve this by storing the sizes
@@ -114,6 +125,9 @@ func (node *Node) GetByIndex(index int) (key string, value interface{}) {
 	}
 }
 
+// Set inserts a new node with the given key-value pair into the subtree rooted at the node,
+// and returns the new root of the subtree and whether an existing node was updated.
+//
 // XXX consider a better way to do this... perhaps split Node from Node.
 func (node *Node) Set(key string, value interface{}) (newSelf *Node, updated bool) {
 	if node == nil {
@@ -155,9 +169,9 @@ func (node *Node) Set(key string, value interface{}) (newSelf *Node, updated boo
 	}
 }
 
-// newNode: The new node to replace node after remove.
-// newKey: new leftmost leaf key for node after successfully removing 'key' if changed.
-// value: removed value.
+// Remove deletes the node with the given key from the subtree rooted at the node.
+// returns the new root of the subtree, the new leftmost leaf key (if changed),
+// the removed value and the removal was successful.
 func (node *Node) Remove(key string) (
 	newNode *Node, newKey string, value interface{}, removed bool,
 ) {
@@ -212,6 +226,7 @@ func (node *Node) getRightNode() *Node {
 	return node.rightNode
 }
 
+// rotateRight performs a right rotation on the node and returns the new root.
 // NOTE: overwrites node
 // TODO: optimize balance & rotate
 func (node *Node) rotateRight() *Node {
@@ -229,6 +244,7 @@ func (node *Node) rotateRight() *Node {
 	return _l
 }
 
+// rotateLeft performs a left rotation on the node and returns the new root.
 // NOTE: overwrites node
 // TODO: optimize balance & rotate
 func (node *Node) rotateLeft() *Node {
@@ -246,16 +262,19 @@ func (node *Node) rotateLeft() *Node {
 	return _r
 }
 
+// calcHeightAndSize updates the height and size of the node based on its children.
 // NOTE: mutates height and size
 func (node *Node) calcHeightAndSize() {
 	node.height = maxInt8(node.getLeftNode().height, node.getRightNode().height) + 1
 	node.size = node.getLeftNode().size + node.getRightNode().size
 }
 
+// calcBalance calculates the balance factor of the node.
 func (node *Node) calcBalance() int {
 	return int(node.getLeftNode().height) - int(node.getRightNode().height)
 }
 
+// balance balances the subtree rooted at the node and returns the new root.
 // NOTE: assumes that node can be modified
 // TODO: optimize balance & rotate
 func (node *Node) balance() (newSelf *Node) {
@@ -266,10 +285,8 @@ func (node *Node) balance() (newSelf *Node) {
 			return node.rotateRight()
 		} else {
 			// Left Right Case
-			// node = node._copy()
 			left := node.getLeftNode()
 			node.leftNode = left.rotateLeft()
-			// node.calcHeightAndSize()
 			return node.rotateRight()
 		}
 	}
@@ -279,10 +296,8 @@ func (node *Node) balance() (newSelf *Node) {
 			return node.rotateLeft()
 		} else {
 			// Right Left Case
-			// node = node._copy()
 			right := node.getRightNode()
 			node.rightNode = right.rotateRight()
-			// node.calcHeightAndSize()
 			return node.rotateLeft()
 		}
 	}
@@ -362,7 +377,7 @@ func (node *Node) TraverseInRange(start, end string, ascending bool, leavesOnly 
 
 // TraverseByOffset traverses all nodes, including inner nodes.
 // A limit of math.MaxInt means no limit.
-func (node *Node) TraverseByOffset(offset, limit int, descending bool, leavesOnly bool, cb func(*Node) bool) bool {
+func (node *Node) TraverseByOffset(offset, limit int, ascending bool, leavesOnly bool, cb func(*Node) bool) bool {
 	if node == nil {
 		return false
 	}
@@ -379,19 +394,21 @@ func (node *Node) TraverseByOffset(offset, limit int, descending bool, leavesOnl
 	}
 
 	// go to the actual recursive function.
-	return node.traverseByOffset(offset, limit, descending, leavesOnly, cb)
+	return node.traverseByOffset(offset, limit, ascending, leavesOnly, cb)
 }
 
-func (node *Node) traverseByOffset(offset, limit int, descending bool, leavesOnly bool, cb func(*Node) bool) bool {
+// TraverseByOffset traverses the subtree rooted at the node by offset and limit,
+// in either ascending or descending order, and applies the callback function to each traversed node.
+// If leavesOnly is true, only leaf nodes are visited.
+func (node *Node) traverseByOffset(offset, limit int, ascending bool, leavesOnly bool, cb func(*Node) bool) bool {
 	// caller guarantees: offset < node.size; limit > 0.
-
 	if !leavesOnly {
 		if cb(node) {
-			return true
+			return true // Stop traversal if callback returns true
 		}
 	}
 	first, second := node.getLeftNode(), node.getRightNode()
-	if descending {
+	if !ascending {
 		first, second = second, first
 	}
 	if first.IsLeaf() {
@@ -399,10 +416,12 @@ func (node *Node) traverseByOffset(offset, limit int, descending bool, leavesOnl
 		if offset > 0 {
 			offset--
 		} else {
-			cb(first)
+			if cb(first) {
+				return true // Stop traversal if callback returns true
+			}
 			limit--
 			if limit <= 0 {
-				return false
+				return true // Stop traversal when limit is reached
 			}
 		}
 	} else {
@@ -413,7 +432,7 @@ func (node *Node) traverseByOffset(offset, limit int, descending bool, leavesOnl
 		if offset >= first.size {
 			offset -= first.size // 1
 		} else {
-			if first.traverseByOffset(offset, limit, descending, leavesOnly, cb) {
+			if first.traverseByOffset(offset, limit, ascending, leavesOnly, cb) {
 				return true
 			}
 			// number of leaves which could actually be called from inside
@@ -436,7 +455,7 @@ func (node *Node) traverseByOffset(offset, limit int, descending bool, leavesOnl
 	}
 	// => if it is not a leaf, it will still be enough to recursively call this
 	// function with the updated offset and limit
-	return second.traverseByOffset(offset, limit, descending, leavesOnly, cb)
+	return second.traverseByOffset(offset, limit, ascending, leavesOnly, cb)
 }
 
 // Only used in testing...
